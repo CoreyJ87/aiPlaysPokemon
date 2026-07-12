@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Companion Avatar</title>
+<style>
+  /* Transparent background so OBS composites it over your scene */
+  html, body { margin: 0; padding: 0; background: transparent; overflow: hidden; }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<script>
+"use strict";
+
+
+/* ============================================================
+   CONFIG — tweak the look here
+   ============================================================ */
+const CONFIG = {
+  wsUrl: "ws://localhost:8765",   // must match the Python server
+  bodyRadius: 90,                 // outer circle (body)
+  eyeRadius: 42,                  // middle circle (eye)
+  pupilRadius: 16,                // inner circle (pupil)
+  bodyColor: "#92a1a6",
+  bodyStroke: "#0b1020",
+  eyeColorDefault: "#ffffff",
+  pupilColor: "#0b1020",
+  floatAmpX: 14,                  // horizontal drift in px
+  floatAmpY: 22,                  // vertical bob in px
+  lookRange: 0.45,                // how far the eye can wander inside the body (fraction of body radius)
+  pupilLookRange: 0.35,           // extra pupil travel inside the eye (fraction of eye radius)
+
+  // --- magnet arms (a sideways horseshoe "U" on each side, open end facing out) ---
+  armColor: "#92a1a6",            // main horseshoe body (classic magnet red)
+  armTipColors: {                 // pole tip colors, each of the four settable individually
+    topLeft:     "#d23b3b",
+    bottomLeft:  "#3b6fd2",
+    topRight:    "#3b6fd2",
+    bottomRight: "#d23b3b"
+  },
+  armOutline: "#0b1020",          // dark edge to match the body outline
+  armThickness: 40,               // stroke width of the U bar
+  armBendRadius: 45,              // radius of the curved (closed) end
+  armProngLength: 90,             // how far the open prongs reach outward
+  armTipLength: 10,               // length of the silver pole tip on each prong
+
+  // --- optional hat worn on the body ---
+  // Drop a "hat.png" next to this file to wear it; refresh the page to
+  // pick up an added/swapped/removed hat.
+  hatSrc: "hat.png",             // image file to look for (relative to this html)
+  hatScale: 1.15,                // width as a multiple of the body diameter
+  hatOffsetX: 0,                 // nudge left(-)/right(+) in px
+  hatOffsetY: 15,                // nudge up(-)/down(+) in px
+  hatOverlap: 23                 // how far the hat dips onto the body (px)
+};
+
+/* ============================================================
+   STATE — updated by messages from Python
+   ============================================================ */
+const state = {
+  mood: "neutral",            // neutral | happy | sad | afk | stressed
+  eyeColor: CONFIG.eyeColorDefault,
+  look: { x: 0, y: 0 },       // target look direction, each -1..1
+  floatSpeed: 1.0             // 0 = frozen, 1 = normal, 2 = twice as fast...
+};
+
+// Smoothed values so changes glide instead of snapping
+const smooth = {
+  lookX: 0, lookY: 0,
+  eyeColor: hexToRgb(CONFIG.eyeColorDefault),
+  eyeColorTarget: hexToRgb(CONFIG.eyeColorDefault),
+  floatSpeed: 1.0
+};
+
+// Float phase accumulates over time so speed changes never cause jumps
+let phaseX = 0, phaseY = Math.PI / 3;
+
+/* ============================================================
+   WEBSOCKET — connects to the Python server, retries forever
+   ============================================================ */
+let ws = null;
+function connect() {
+  ws = new WebSocket(CONFIG.wsUrl);
+  ws.onmessage = (ev) => {
+    let msg;
+    try { msg = JSON.parse(ev.data); } catch { return; }
+    applyUpdate(msg);
+  };
+  ws.onclose = () => setTimeout(connect, 1000);
+  ws.onerror = () => ws.close();
+}
+connect();
+
+function applyUpdate(msg) {
+  if (typeof msg.mood === "string") state.mood = msg.mood;
+  if (typeof msg.eye_color === "string") {
+    const rgb = hexToRgb(msg.eye_color);
+    if (rgb) smooth.eyeColorTarget = rgb;
+  }
+  if (msg.look && typeof msg.look.x === "number" && typeof msg.look.y === "number") {
+    state.look.x = clamp(msg.look.x, -1, 1);
+    state.look.y = clamp(msg.look.y, -1, 1);
+  }
+  if (typeof msg.float_speed === "number") {
+    state.floatSpeed = Math.max(0, msg.float_speed);
+  }
+}
+
+/* ============================================================
+   HAT — optionally load "hat.png" and wear it on the body.
+   Loaded once at startup; refresh the page to change it.
+   ============================================================ */
+const hat = { img: new Image(), ready: false };
+hat.img.onload = () => { hat.ready = hat.img.naturalWidth > 0; };
+hat.img.onerror = () => { hat.ready = false; };
+hat.img.src = CONFIG.hatSrc;
+
+/* ============================================================
+   RENDERING
+   ============================================================ */
+const canvas = document.getElementById("stage");
+const ctx = canvas.getContext("2d");
+
+function resize() {
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+}
+window.addEventListener("resize", resize);
+resize();
+
+let lastT = performance.now();
+
+function frame(now) {
+  const dt = Math.min((now - lastT) / 1000, 0.1); // seconds, capped
+  lastT = now;
+
+  // --- smoothing ---
+  smooth.floatSpeed = lerp(smooth.floatSpeed, state.floatSpeed, 1 - Math.pow(0.02, dt));
+  smooth.lookX = lerp(smooth.lookX, state.look.x, 1 - Math.pow(0.005, dt));
+  smooth.lookY = lerp(smooth.lookY, state.look.y, 1 - Math.pow(0.005, dt));
+  smooth.eyeColor = lerpRgb(smooth.eyeColor, smooth.eyeColorTarget, 1 - Math.pow(0.01, dt));
+
+  // --- float motion (phase accumulates, so speed changes are seamless) ---
+  phaseX += dt * smooth.floatSpeed * 0.9;   // slow horizontal drift
+  phaseY += dt * smooth.floatSpeed * 1.6;   // slightly faster vertical bob
+
+  const cx = canvas.width / 2 + Math.sin(phaseX) * CONFIG.floatAmpX;
+  const cy = canvas.height / 2 + Math.sin(phaseY) * CONFIG.floatAmpY;
+
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  // --- magnet arms (drawn first so the closed end tucks behind the body) ---
+  drawMagnetArm(cx, cy, -1); // left
+  drawMagnetArm(cx, cy, +1); // right
+
+  // --- body ---
+  ctx.beginPath();
+  ctx.arc(cx, cy, CONFIG.bodyRadius, 0, Math.PI * 2);
+  ctx.fillStyle = CONFIG.bodyColor;
+  ctx.fill();
+  ctx.lineWidth = 4;
+  ctx.strokeStyle = CONFIG.bodyStroke;
+  ctx.stroke();
+
+  // --- eye (middle circle), shifted toward look direction ---
+  const eyeOffset = CONFIG.bodyRadius * CONFIG.lookRange;
+  const ex = cx + smooth.lookX * eyeOffset;
+  const ey = cy + smooth.lookY * eyeOffset;
+
+  ctx.beginPath();
+  ctx.arc(ex, ey, CONFIG.eyeRadius, 0, Math.PI * 2);
+  ctx.fillStyle = rgbToCss(smooth.eyeColor);
+  ctx.fill();
+
+  // --- pupil, shifted a bit further inside the eye ---
+  const pupilOffset = CONFIG.eyeRadius * CONFIG.pupilLookRange;
+  const px = ex + smooth.lookX * pupilOffset;
+  const py = ey + smooth.lookY * pupilOffset;
+
+  drawPupil(state.mood, px, py, CONFIG.pupilRadius);
+
+  // --- hat (drawn last so it sits on top of the body) ---
+  if (hat.ready) {
+    const w = CONFIG.bodyRadius * 2 * CONFIG.hatScale;
+    const h = w * (hat.img.naturalHeight / hat.img.naturalWidth);
+    const hx = cx - w / 2 + CONFIG.hatOffsetX;
+    const hy = (cy - CONFIG.bodyRadius) - h + CONFIG.hatOverlap + CONFIG.hatOffsetY;
+    ctx.drawImage(hat.img, hx, hy, w, h);
+  }
+
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+/* ============================================================
+   MAGNET ARM — a sideways "U" (horseshoe magnet)
+   side = -1 draws on the left, +1 on the right.
+   The curved end faces the body; the open prongs face outward.
+   ============================================================ */
+function drawMagnetArm(cx, cy, side) {
+  const r = CONFIG.armBendRadius;
+  const L = CONFIG.armProngLength;
+  const w = CONFIG.armThickness;
+
+  // Center of the curved end, sitting just outside the body edge.
+  const bx = cx + side * (CONFIG.bodyRadius - 6 + r);
+  const topY = cy - r;
+  const botY = cy + r;
+  const tipX = bx + side * L;      // outer tip of each prong
+  const acw = side > 0;            // which half of the circle bulges toward the body
+
+  // Trace the U: top prong -> curved back -> bottom prong.
+  function tracePath() {
+    ctx.beginPath();
+    ctx.moveTo(tipX, topY);
+    ctx.lineTo(bx, topY);
+    ctx.arc(bx, cy, r, -Math.PI / 2, Math.PI / 2, acw);
+    ctx.lineTo(tipX, botY);
+  }
+
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+
+  // Dark outline underneath, matching the body's edge.
+  ctx.lineWidth = w + 6;
+  ctx.strokeStyle = CONFIG.armOutline;
+  tracePath();
+  ctx.stroke();
+
+  // Main red horseshoe body.
+  ctx.lineWidth = w;
+  ctx.strokeStyle = CONFIG.armColor;
+  tracePath();
+  ctx.stroke();
+
+  // Pole tips on the open ends — each of the four colored individually.
+  const tips = CONFIG.armTipColors;
+  const topColor = side < 0 ? tips.topLeft : tips.topRight;
+  const botColor = side < 0 ? tips.bottomLeft : tips.bottomRight;
+  const inX = tipX - side * CONFIG.armTipLength;
+
+  ctx.strokeStyle = topColor;
+  ctx.beginPath();
+  ctx.moveTo(tipX, topY); ctx.lineTo(inX, topY);
+  ctx.stroke();
+
+  ctx.strokeStyle = botColor;
+  ctx.beginPath();
+  ctx.moveTo(tipX, botY); ctx.lineTo(inX, botY);
+  ctx.stroke();
+}
+
+/* ============================================================
+   PUPIL SHAPES
+   neutral  -> filled circle
+   happy    -> upside-down U (arc opening downward)
+   sad      -> U (arc opening upward)
+   afk      -> horizontal line
+   stressed -> X
+   ============================================================ */
+function drawPupil(mood, x, y, r) {
+  ctx.strokeStyle = CONFIG.pupilColor;
+  ctx.fillStyle = CONFIG.pupilColor;
+  ctx.lineWidth = Math.max(4, r * 0.45);
+  ctx.lineCap = "round";
+
+  switch (mood) {
+    case "happy": // ∩  — top half of a circle
+      ctx.beginPath();
+      ctx.arc(x, y + r * 0.35, r, Math.PI, 2 * Math.PI);
+      ctx.stroke();
+      break;
+    case "sad": // ∪ — bottom half of a circle
+      ctx.beginPath();
+      ctx.arc(x, y - r * 0.35, r, 0, Math.PI);
+      ctx.stroke();
+      break;
+    case "afk": // —
+      ctx.beginPath();
+      ctx.moveTo(x - r, y);
+      ctx.lineTo(x + r, y);
+      ctx.stroke();
+      break;
+    case "stressed": { // X
+      const d = r * 0.85;
+      ctx.beginPath();
+      ctx.moveTo(x - d, y - d); ctx.lineTo(x + d, y + d);
+      ctx.moveTo(x + d, y - d); ctx.lineTo(x - d, y + d);
+      ctx.stroke();
+      break;
+    }
+    default: // neutral: filled circle
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fill();
+  }
+}
+
+/* ============================================================
+   HELPERS
+   ============================================================ */
+function clamp(v, lo, hi) { return Math.min(hi, Math.max(lo, v)); }
+function lerp(a, b, t) { return a + (b - a) * t; }
+function lerpRgb(a, b, t) {
+  return { r: lerp(a.r, b.r, t), g: lerp(a.g, b.g, t), b: lerp(a.b, b.b, t) };
+}
+function rgbToCss(c) { return `rgb(${c.r | 0}, ${c.g | 0}, ${c.b | 0})`; }
+function hexToRgb(hex) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim());
+  if (!m) return null;
+  const n = parseInt(m[1], 16);
+  return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
+}
+</script>
+</body>
+</html>

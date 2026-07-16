@@ -94,9 +94,9 @@ class Avatar:
             self._update(**updates)
 
     # Convenience presets that pair a mood with a fitting eye color
-    def happy(self):    self.set_state(mood="happy", eye_color="#9ed7f0", float_speed=1.5)
-    def sad(self):      self.set_state(mood="sad", eye_color="#4169e1", float_speed=0.5)
-    def angry(self):    self.set_state(mood="stressed", eye_color="#ff3b30", float_speed=2.0)
+    def happy(self):    self.set_state(mood="happy", eye_color="#cdcf43", float_speed=2.5)
+    def sad(self):      self.set_state(mood="sad", eye_color="#3b6fd2", float_speed=0.5)
+    def angry(self):    self.set_state(mood="stressed", eye_color="#d23b3b", float_speed=5.0)
     def asleep(self):   self.set_state(mood="afk", eye_color="#ffffff", float_speed=0.0)
     def neutral(self):  self.set_state(mood="neutral", eye_color="#ffffff", float_speed=1.0)
     def off(self):      self.set_state(mood="stressed", eye_color="#ffffff", float_speed=0.0)

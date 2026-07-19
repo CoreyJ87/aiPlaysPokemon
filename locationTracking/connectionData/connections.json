@@ -116,6 +116,20 @@
             4,
             8
           ]
+        },
+        {
+          "type": "edge",
+          "fromTile": [
+            8,
+            19
+          ],
+          "toMap": "Route21",
+          "toTile": [
+            8,
+            0
+          ],
+          "direction": "south",
+          "width": 2
         }
       ]
     },
@@ -194,17 +208,143 @@
           "type": "edge",
           "fromTile": [
             50,
-            8
+            6
           ],
           "toMap": "ViridianCity",
           "toTile": [
             0,
-            18
+            16
           ],
           "direction": "east",
-          "width": 1
+          "width": 4
         }
       ]
+    },
+    "Route02": {
+      "imageFile": "Route02.png",
+      "widthTiles": 24,
+      "heightTiles": 80,
+      "connections": [
+        {
+          "type": "edge",
+          "fromTile": [
+            7,
+            79
+          ],
+          "toMap": "ViridianCity",
+          "toTile": [
+            19,
+            0
+          ],
+          "direction": "south",
+          "width": 5
+        },
+        {
+          "type": "edge",
+          "fromTile": [
+            8,
+            0
+          ],
+          "toMap": "PewterCity",
+          "toTile": [
+            20,
+            39
+          ],
+          "direction": "north",
+          "width": 4
+        }
+      ]
+    },
+    "ViridianCity": {
+      "imageFile": "ViridianCity.png",
+      "widthTiles": 48,
+      "heightTiles": 40,
+      "connections": [
+        {
+          "type": "edge",
+          "fromTile": [
+            0,
+            16
+          ],
+          "toMap": "Route22",
+          "toTile": [
+            50,
+            6
+          ],
+          "direction": "west",
+          "width": 4
+        },
+        {
+          "type": "edge",
+          "fromTile": [
+            22,
+            39
+          ],
+          "toMap": "Route01",
+          "toTile": [
+            10,
+            0
+          ],
+          "direction": "south",
+          "width": 4
+        },
+        {
+          "type": "door",
+          "fromTile": [
+            26,
+            26
+          ],
+          "toMap": "Pokemon_Center_inside_FRLG",
+          "toTile": [
+            7,
+            8
+          ]
+        },
+        {
+          "type": "door",
+          "fromTile": [
+            36,
+            19
+          ],
+          "toMap": "Poke_Mart_interior_FRLG",
+          "toTile": [
+            4,
+            7
+          ]
+        },
+        {
+          "type": "door",
+          "fromTile": [
+            36,
+            10
+          ],
+          "toMap": "ViridianCity-Gym",
+          "toTile": [
+            17,
+            22
+          ]
+        },
+        {
+          "type": "edge",
+          "fromTile": [
+            19,
+            0
+          ],
+          "toMap": "Route02",
+          "toTile": [
+            7,
+            79
+          ],
+          "direction": "north",
+          "width": 5
+        }
+      ]
+    },
+    "ViridianForest": {
+      "imageFile": "ViridianForest.png",
+      "widthTiles": 54,
+      "heightTiles": 69,
+      "connections": []
     }
   },
   "landmarks": {},

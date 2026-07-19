@@ -19,6 +19,12 @@
 --   party: [ { species, nickname, level, hp, max_hp, stats, moves, nature,
 --              ability, type1, type2, held_item, status, evs, ivs, ... } ]
 --   bag: { items, key_items, poke_balls, tms_hms, berries }
+--   in_battle: true while a battle is running
+--   enemy_party: (in battle only) opposing team, same fields as party --
+--                full stats, EVs/IVs, nature, ability, item, moves
+--   battle: (in battle only) { player_active, enemy_active } from
+--           gBattleMons -- live modified stats, stat stages (-6..+6),
+--           current types/ability (handles Transform, Color Change, etc.)
 --
 -- Buttons: A, B, START, SELECT, UP, DOWN, LEFT, RIGHT, L, R
 --
@@ -159,6 +165,14 @@ local ABILITY_NAMES = {
 local RAM_PARTY_BASE     = 0x02024284  -- Party Pokemon 1, 100 bytes each
 local RAM_ENEMY_BASE     = 0x0202402C  -- Enemy Pokemon 1, 100 bytes each
 local POKEMON_DATA_SIZE  = 100         -- bytes per Pokemon in party
+
+-- Battle state (FR/LG US)
+local RAM_GMAIN          = 0x030030F0  -- gMain struct (IWRAM)
+local GMAIN_IN_BATTLE_OFS = 0x439      -- byte holding the inBattle bitfield
+local GMAIN_IN_BATTLE_BIT = 1          -- inBattle is bit 1 of that byte
+local RAM_BATTLE_MONS    = 0x02023BE4  -- gBattleMons: active battlers' live data
+local BATTLE_MON_SIZE    = 0x58        -- bytes per BattlePokemon struct
+                                       -- index 0 = player, 1 = opponent (singles)
 
 -- DMA-protected save block pointers (read these to get the actual base)
 local PTR_SAVEBLOCK1     = 0x03005008  -- Map/party/items/flags
@@ -475,6 +489,92 @@ local function readPokemon(base)
 end
 
 ---------------------------------------------------------------------------
+-- Gen 3 Game State: Battle Readers
+---------------------------------------------------------------------------
+
+--- True while a battle is running (gMain.inBattle).
+--- Needed because gEnemyParty is NOT cleared when a battle ends; without
+--- this check you'd report stale opponents from the previous fight.
+local function isInBattle()
+    local b = emu:read8(RAM_GMAIN + GMAIN_IN_BATTLE_OFS)
+    return ((b >> GMAIN_IN_BATTLE_BIT) & 1) == 1
+end
+
+--- Read one active battler from gBattleMons (unencrypted, in-battle only).
+--- Unlike the party structs, this reflects LIVE battle state: stat stages,
+--- stats already modified by nature, current types (e.g. Color Change),
+--- Transform copies, etc. Stat stages are stored 0-12 (6 = neutral); we
+--- convert to the familiar -6..+6 range.
+--- idx: 0 = player's active mon, 1 = opponent's (2/3 used in doubles).
+local function readBattleMon(idx)
+    local base = RAM_BATTLE_MONS + idx * BATTLE_MON_SIZE
+
+    local species = emu:read16(base + 0x00)
+    if species == 0 or species > 439 then return nil end
+
+    -- Moves and PP
+    local moves = {}
+    for i = 0, 3 do
+        local moveId = emu:read16(base + 0x0C + i * 2)
+        if moveId ~= 0 then
+            moves[#moves + 1] = {
+                name = getMoveName(moveId),
+                id   = moveId,
+                pp   = emu:read8(base + 0x24 + i),
+            }
+        end
+    end
+
+    -- Stat stages: hp(unused), atk, def, speed, spatk, spdef, acc, evasion
+    local stageNames = { "attack", "defense", "speed", "sp_attack",
+                         "sp_defense", "accuracy", "evasion" }
+    local stages = {}
+    for i = 1, 7 do
+        stages[stageNames[i]] = emu:read8(base + 0x18 + i) - 6
+    end
+
+    local type1Id = emu:read8(base + 0x21)
+    local type2Id = emu:read8(base + 0x22)
+    local abilityId = emu:read8(base + 0x20)
+
+    return {
+        species     = getSpeciesName(species),
+        species_id  = species,
+        nickname    = readGen3String(base + 0x30, 10),
+        level       = emu:read8(base + 0x2A),
+        hp          = emu:read16(base + 0x28),
+        max_hp      = emu:read16(base + 0x2C),
+        attack      = emu:read16(base + 0x02),
+        defense     = emu:read16(base + 0x04),
+        speed       = emu:read16(base + 0x06),
+        sp_attack   = emu:read16(base + 0x08),
+        sp_defense  = emu:read16(base + 0x0A),
+        type1       = TYPE_NAMES[type1Id] or "???",
+        type2       = TYPE_NAMES[type2Id] or "???",
+        ability     = ABILITY_NAMES[abilityId] or "Unknown",
+        held_item   = getItemName(emu:read16(base + 0x2E)),
+        status      = decodeStatus(emu:read32(base + 0x4C)),
+        stat_stages = stages,
+        moves       = moves,
+    }
+end
+
+--- Read the full enemy party (trainer's whole team, or the one wild mon).
+--- Same 100-byte encrypted format as the player's party, so readPokemon
+--- works unchanged. The game zeroes gEnemyParty at battle start, so unused
+--- slots have PID 0 and readPokemon skips them automatically.
+local function readEnemyParty()
+    local enemies = {}
+    for i = 0, 5 do
+        local pkmn = readPokemon(RAM_ENEMY_BASE + i * POKEMON_DATA_SIZE)
+        if pkmn then
+            enemies[#enemies + 1] = pkmn
+        end
+    end
+    return enemies
+end
+
+---------------------------------------------------------------------------
 -- Gen 3 Game State: Save Block Readers
 ---------------------------------------------------------------------------
 
@@ -722,6 +822,17 @@ local function handleGameState()
         berries    = readBagPocket(sb1, SB1_BERRIES,     BAG_BERRIES_SIZE,    secKeyLow16),
     }
 
+    -- ---- Battle State (enemy team + active battlers) ----
+    local inBattle = isInBattle()
+    local enemyParty, battle = nil, nil
+    if inBattle then
+        enemyParty = readEnemyParty()
+        battle = {
+            player_active = readBattleMon(0),
+            enemy_active  = readBattleMon(1),
+        }
+    end
+
     -- ---- Assemble State ----
     local state = {
         game = ROM_VERSION_NAME,
@@ -738,6 +849,10 @@ local function handleGameState()
         party_count = #party,
         party       = party,
         bag         = bag,
+        in_battle   = inBattle,
+        enemy_party_count = enemyParty and #enemyParty or 0,
+        enemy_party = enemyParty,   -- nil (omitted) outside battle
+        battle      = battle,       -- nil (omitted) outside battle
     }
 
     return "OK|" .. toJSON(state) .. "\n"

@@ -89,6 +89,58 @@ def ping(sock: socket.socket):
     print(f"PING: {header}")
 
 
+def _format_types(pk: dict) -> str:
+    types = pk.get("type1", "?")
+    if pk.get("type2") and pk["type2"] != pk.get("type1"):
+        types += f"/{pk['type2']}"
+    return types
+
+
+def _print_pokemon(pk: dict, index: int = None, indent: str = "  ",
+                   show_details: bool = False):
+    """Print one Pokemon from a party list (player or enemy)."""
+    prefix = f"{indent}{index}. " if index is not None else indent
+    status = f" [{pk['status']}]" if pk.get("status") != "OK" else ""
+    item = f"  @{pk['held_item']}" if pk.get("held_item") not in (None, "None") else ""
+    # Battle mons from gBattleMons don't carry a nature field
+    nature = f"  {pk['nature']}" if pk.get("nature") else ""
+    print(f"{prefix}{pk['nickname']} ({pk['species']}) Lv{pk['level']}  "
+          f"HP:{pk['hp']}/{pk['max_hp']}  {_format_types(pk)}{nature}  "
+          f"Ability:{pk['ability']}{item}{status}")
+    print(f"{indent}   Stats: ATK:{pk['attack']}  DEF:{pk['defense']}  "
+          f"SpATK:{pk['sp_attack']}  SpDEF:{pk['sp_defense']}  SPD:{pk['speed']}")
+    moves = [f"{m['name']} (PP:{m['pp']})" for m in pk.get("moves", [])]
+    print(f"{indent}   Moves: {', '.join(moves)}")
+    if show_details:
+        evs = pk.get("evs")
+        if evs:
+            print(f"{indent}   EVs:   HP:{evs['hp']}  ATK:{evs['attack']}  "
+                  f"DEF:{evs['defense']}  SpATK:{evs['sp_atk']}  "
+                  f"SpDEF:{evs['sp_def']}  SPD:{evs['speed']}")
+        ivs = pk.get("ivs")
+        if ivs:
+            print(f"{indent}   IVs:   HP:{ivs['hp']}  ATK:{ivs['attack']}  "
+                  f"DEF:{ivs['defense']}  SpATK:{ivs['sp_atk']}  "
+                  f"SpDEF:{ivs['sp_def']}  SPD:{ivs['speed']}")
+
+
+def _print_battle_mon(label: str, mon: dict):
+    """Print a live battler from gBattleMons, including stat stages."""
+    if not mon:
+        print(f"  {label}: (none)")
+        return
+    print(f"  {label}:")
+    _print_pokemon(mon, indent="    ")
+    stages = mon.get("stat_stages", {})
+    changed = {k: v for k, v in stages.items() if v != 0}
+    if changed:
+        stage_str = "  ".join(
+            f"{k.replace('_', ' ').title()}:{v:+d}" for k, v in changed.items())
+        print(f"       Stages: {stage_str}")
+    else:
+        print(f"       Stages: (all neutral)")
+
+
 def game_state(sock: socket.socket):
     """Request the full game state and pretty-print it."""
     header, _ = send_command(sock, "GAME_STATE")
@@ -112,17 +164,19 @@ def game_state(sock: socket.socket):
     party = state.get("party", [])
     print(f"Party ({len(party)}):")
     for i, pk in enumerate(party):
-        types = pk["type1"]
-        if pk["type2"] != pk["type1"]:
-            types += f"/{pk['type2']}"
-        status = f" [{pk['status']}]" if pk.get("status") != "OK" else ""
-        print(f"  {i+1}. {pk['nickname']} ({pk['species']}) Lv{pk['level']}  "
-              f"HP:{pk['hp']}/{pk['max_hp']}  {types}  {pk['nature']}  "
-              f"Ability:{pk['ability']}{status}")
-        print(f"     Stats: ATK:{pk['attack']}  DEF:{pk['defense']}  "
-              f"SpATK:{pk['sp_attack']}  SpDEF:{pk['sp_defense']}  SPD:{pk['speed']}")
-        moves = [m["name"] for m in pk.get("moves", [])]
-        print(f"     Moves: {', '.join(moves)}")
+        _print_pokemon(pk, index=i + 1)
+
+    if state.get("in_battle"):
+        print("\n=== IN BATTLE ===")
+
+        battle = state.get("battle") or {}
+        _print_battle_mon("Your active", battle.get("player_active"))
+        _print_battle_mon("Enemy active", battle.get("enemy_active"))
+
+        enemy_party = state.get("enemy_party") or []
+        print(f"\nEnemy Party ({len(enemy_party)}):")
+        for i, pk in enumerate(enemy_party):
+            _print_pokemon(pk, index=i + 1, show_details=True)
 
     bag = state.get("bag", {})
     for pocket_name, items in bag.items():

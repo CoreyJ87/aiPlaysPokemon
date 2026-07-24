@@ -17,6 +17,7 @@ Our goal is to defeat the Elite Four and become the Pokemon Champion in either F
   - We picked Gemma 4 because it has a wide selection of sizes for local models that can run on both Raspberry Pis and laptops 
 - The model must be involved in playing the game
   - While this is a TAS, we don’t want everything to be hard-coded
+- When possible, try to mimic and keep only the data avaliable that a human player would have
 
 ## Tool Design
 
@@ -25,3 +26,10 @@ To beat Fire Red and Leaf Green, we need the model to know how to do three thing
 But before we get into our actual solutions, let's go over how you decide what needs to be a tool for a model, and how you should present data to a model.  A key point is that tools allow agents and models to interact with an existing system or data set; it doesn’t mean that the model or agent becomes that system or data set.  Your tooling acts as a translator between the discrete deterministic space of the existing program and the nondeterministic space of the model/agent.  This both lets you keep the repeatability and reliability of the underlying tool program, and separates the model and agent from the logic within the tool.  
 
 A good example of this is navigation.  Let's say you have a drone, and you are using an agent to interface with and control the drone.  Telling the drone to go from X to Y or to travel Z distance in a direction are pretty common asks; however, the math for geospatial navigation can get very complicated very fast, especially when changing altitude or moving over long distances.  While you could have the agent solve the math internally, doing so doesn’t give you a guarantee that it will always solve it the same way, and that it won’t try to simplify the solution in a way that makes the answer incorrect.  Thus, separating these calculations into a standalone tool that the agent/model calls via API and then passes in the locations and distances from the user while getting back a validated answer.  You can even move the actual waypoint calls inside this script, making it so that your model/agent is only getting a more abstracted and easier-to-understand description of what is going on rather than the underlying MAVLink message traffic.  
+
+### Navigation
+
+Because we are going to be running on an emulator, we actually have multiple ways to solve navigating across the map.  The game itself keeps track of the player location as well as those of the NPCs, so we could just grab and expose those values.  However, that approach isn't really adaptable to other games, both other pokemon games and other Game Boy Advance releases.  Instead, we'll use tile matching for location finding, and then dynamically calculate the route from there.  
+
+Tile matching takes advantage of how every map in the early generations of Pokemon were made out of a combination of 16x16 pixel tiles.  Additionally, each map is unique enough that you can almost always tell which map you are on.  This means that you can compare a live screenshot of the game to the extracted map images, and pretty reliably know exactly where you are.  This tile pattern also makes it dynamically figure out routes and paths, since you can label which tiles are walkable/surfable/etc and which are not.  We have a full breakdown of how navigation works over in [the location tracking folder](./locationTracking/)
+

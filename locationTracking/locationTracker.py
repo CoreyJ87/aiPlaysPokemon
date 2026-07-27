@@ -47,6 +47,12 @@ class LocationTracker:
         self._instanceByBankNum = {}  # (bank, number) -> instanceId
         self._loadConnections(connectionDataDir)
 
+        # Authoritative (bank, number) -> mapName lookup from game RAM. This is
+        # the primary way we resolve map identity; template matching is only
+        # used for position within the resolved map (see locatePlayer).
+        self._mapNameByBankNum = {}
+        self._loadMapIds(connectionDataDir)
+
         self.currentMap = None
         self.currentPosition = None  # (x, y) pixel coords of player on the map
         self.currentTile = None      # (col, row)
@@ -81,6 +87,23 @@ class LocationTracker:
             if 'bank' in rec and 'number' in rec:
                 self._instanceByBankNum[(rec['bank'], rec['number'])] = instId
 
+    def _loadMapIds(self, connectionDataDir):
+        """Build (bank, number) -> mapName from mapIds.json.
+
+        mapIds.json stores mapName -> [[bank, number], ...]; several bank/number
+        pairs may point at the same map (e.g. shared interiors), so this reverse
+        lookup is many-to-one and unambiguous per (bank, number).
+        """
+        idsPath = os.path.join(connectionDataDir, 'mapIds.json')
+        if not os.path.exists(idsPath):
+            return
+        with open(idsPath, 'r') as f:
+            data = json.load(f)
+        for mapName, pairs in data.items():
+            for pair in pairs:
+                if len(pair) == 2:
+                    self._mapNameByBankNum[(pair[0], pair[1])] = mapName
+
     def locatePlayer(self, screenshotPath, gameState=None):
         """
         Find which map the screenshot belongs to and where the player is on it.
@@ -98,15 +121,31 @@ class LocationTracker:
             print(f'LocationTracker: Could not read screenshot at {screenshotPath}')
             return None
 
-        # Phase 1: try the current map + its neighbors (fast path).
-        candidates = self._neighborCandidates()
-        best = self._matchAgainst(screenshot, candidates) if candidates else None
+        # Phase 0: if game RAM tells us the exact map, that IS the identity.
+        # Template matching can't distinguish visually identical maps (e.g. the
+        # Route 2 <-> Viridian Forest gates), so bank/number wins outright when
+        # available. We still template-match, but only against that one map, to
+        # recover the player's pixel position within it.
+        stateMap = self._mapFromState(gameState)
+        if stateMap is not None:
+            best = self._matchAgainst(screenshot, [stateMap])
+            if best is None:
+                print(f'LocationTracker: game state map {stateMap!r} did not '
+                      f'match the screenshot; falling back to template search.')
 
-        # Phase 2: full scan if the fast path was missing or low-confidence.
-        if best is None or best[1] < self.CONFIDENCE_THRESHOLD:
-            full = self._matchAgainst(screenshot, list(self.maps.keys()))
-            if full and (best is None or full[1] > best[1]):
-                best = full
+        # Phase 1: try the current map + its neighbors (fast path).
+        else:
+            best = None
+
+        if best is None:
+            candidates = self._neighborCandidates()
+            best = self._matchAgainst(screenshot, candidates) if candidates else None
+
+            # Phase 2: full scan if the fast path was missing or low-confidence.
+            if best is None or best[1] < self.CONFIDENCE_THRESHOLD:
+                full = self._matchAgainst(screenshot, list(self.maps.keys()))
+                if full and (best is None or full[1] > best[1]):
+                    best = full
 
         if best is None:
             print('LocationTracker: No matching map found.')
@@ -162,13 +201,9 @@ class LocationTracker:
                 best = (mapName, maxVal, maxLoc)
         return best
 
-    def disambiguateInstance(self, mapName, gameState):
-        """
-        Resolve the world instance for a (possibly shared) map.
-
-        Uses GAME_STATE's map_bank/map_number against the instance registry.
-        Returns an instanceId, or None when not a shared map / not resolvable.
-        """
+    @staticmethod
+    def _bankNumFromState(gameState):
+        """Extract (bank, number) from a GAME_STATE dict, or None."""
         if not gameState:
             return None
         player = gameState.get('player', gameState)
@@ -176,7 +211,34 @@ class LocationTracker:
         number = player.get('map_number')
         if bank is None or number is None:
             return None
-        return self._instanceByBankNum.get((bank, number))
+        return (bank, number)
+
+    def _mapFromState(self, gameState):
+        """Resolve the authoritative mapName from game RAM, or None.
+
+        Returns None when there's no game state, no bank/number, the pair isn't
+        registered in mapIds.json, or the resolved map has no loaded image. In
+        every None case locatePlayer falls back to template-matching search.
+        """
+        bankNum = self._bankNumFromState(gameState)
+        if bankNum is None:
+            return None
+        mapName = self._mapNameByBankNum.get(bankNum)
+        if mapName is None or mapName not in self.maps:
+            return None
+        return mapName
+
+    def disambiguateInstance(self, mapName, gameState):
+        """
+        Resolve the world instance for a (possibly shared) map.
+
+        Uses GAME_STATE's map_bank/map_number against the instance registry.
+        Returns an instanceId, or None when not a shared map / not resolvable.
+        """
+        bankNum = self._bankNumFromState(gameState)
+        if bankNum is None:
+            return None
+        return self._instanceByBankNum.get(bankNum)
 
     def getMapNames(self):
         return list(self.maps.keys())

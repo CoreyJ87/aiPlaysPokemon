@@ -252,6 +252,30 @@
           ],
           "direction": "north",
           "width": 4
+        },
+        {
+          "type": "door",
+          "fromTile": [
+            5,
+            51
+          ],
+          "toMap": "Route02_ViridianForest",
+          "toTile": [
+            7,
+            10
+          ]
+        },
+        {
+          "type": "door",
+          "fromTile": [
+            5,
+            13
+          ],
+          "toMap": "ViridianForest_Route02",
+          "toTile": [
+            7,
+            2
+          ]
         }
       ]
     },
@@ -344,7 +368,94 @@
       "imageFile": "ViridianForest.png",
       "widthTiles": 54,
       "heightTiles": 69,
-      "connections": []
+      "connections": [
+        {
+          "type": "door",
+          "fromTile": [
+            5,
+            9
+          ],
+          "toMap": "ViridianForest_Route02",
+          "toTile": [
+            7,
+            10
+          ]
+        },
+        {
+          "type": "door",
+          "fromTile": [
+            29,
+            62
+          ],
+          "toMap": "Route02_ViridianForest",
+          "toTile": [
+            7,
+            2
+          ]
+        }
+      ]
+    },
+    "Route02_ViridianForest": {
+      "imageFile": "Route02_ViridianForest.png",
+      "widthTiles": 15,
+      "heightTiles": 12,
+      "connections": [
+        {
+          "type": "door",
+          "fromTile": [
+            7,
+            1
+          ],
+          "toMap": "ViridianForest",
+          "toTile": [
+            29,
+            62
+          ]
+        },
+        {
+          "type": "door",
+          "fromTile": [
+            7,
+            10
+          ],
+          "toMap": "Route02",
+          "toTile": [
+            5,
+            51
+          ]
+        }
+      ]
+    },
+    "ViridianForest_Route02": {
+      "imageFile": "ViridianForest_Route02.png",
+      "widthTiles": 15,
+      "heightTiles": 12,
+      "connections": [
+        {
+          "type": "door",
+          "fromTile": [
+            7,
+            1
+          ],
+          "toMap": "Route02",
+          "toTile": [
+            5,
+            13
+          ]
+        },
+        {
+          "type": "door",
+          "fromTile": [
+            7,
+            10
+          ],
+          "toMap": "ViridianForest",
+          "toTile": [
+            5,
+            10
+          ]
+        }
+      ]
     }
   },
   "landmarks": {},

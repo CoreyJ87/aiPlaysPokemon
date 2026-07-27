@@ -50,5 +50,17 @@
       3,
       41
     ]
+  ],
+  "Route02_ViridianForest": [
+    [
+      15,
+      0
+    ]
+  ],
+  "ViridianForest_Route02": [
+    [
+      15,
+      3
+    ]
   ]
 }

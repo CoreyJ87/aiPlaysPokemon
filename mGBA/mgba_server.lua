@@ -162,6 +162,7 @@ local ABILITY_NAMES = {
 -- ROM data table addresses are the same for FR and LG v1.0.
 
 -- Fixed RAM addresses (not DMA-protected)
+local RAM_PARTY_COUNT    = 0x02024029  -- gPlayerPartyCount (live, 1 byte)
 local RAM_PARTY_BASE     = 0x02024284  -- Party Pokemon 1, 100 bytes each
 local RAM_ENEMY_BASE     = 0x0202402C  -- Enemy Pokemon 1, 100 bytes each
 local POKEMON_DATA_SIZE  = 100         -- bytes per Pokemon in party
@@ -802,7 +803,10 @@ local function handleGameState()
     local playerY    = emu:read16(sb1 + SB1_PLAYER_Y)
 
     -- ---- Party Pokemon ----
-    local partyCount = emu:read8(sb1 + SB1_PARTY_COUNT)
+    -- Read the LIVE party count from gPlayerPartyCount, not SaveBlock1.
+    -- SaveBlock1's copy is only refreshed when the player saves the game, so
+    -- a mon caught since the last save is missing from the SB1 count.
+    local partyCount = emu:read8(RAM_PARTY_COUNT)
     if partyCount > 6 then partyCount = 6 end
 
     local party = {}

@@ -11,7 +11,13 @@
 --   TAP|<button>|<frames> - Press button for N frames
 --   SCREENSHOT            - Returns PNG bytes: OK|<byte_length>\n<raw PNG bytes>
 --   GAME_STATE            - Returns full game state as JSON: OK|<json>\n
+--   POSITION              - Returns just map/x/y/in_battle as JSON: OK|<json>\n
 --   PING                  - Returns OK\n (health check)
+--
+-- POSITION exists because GAME_STATE is far too heavy to poll: it walks the
+-- whole party, five bag pockets and (in battle) both active battlers, while a
+-- caller asking "did that button press move us?" needs four numbers. Use it for
+-- movement verification; use GAME_STATE when you actually want the game state.
 --
 -- GAME_STATE returns JSON with:
 --   player: { name, trainer_id, money, badges, map_bank, map_number, x, y }
@@ -862,6 +868,30 @@ local function handleGameState()
     return "OK|" .. toJSON(state) .. "\n"
 end
 
+--- Lightweight position query: just enough to verify movement.
+local function handlePosition()
+    if emu:platform() ~= C.PLATFORM.GBA then
+        return "ERR|POSITION requires a GBA game\n"
+    end
+    if ROM_BASE_STATS == 0 then
+        return "ERR|POSITION unsupported ROM: " .. ROM_VERSION_NAME .. "\n"
+    end
+
+    local sb1 = emu:read32(PTR_SAVEBLOCK1)
+    if sb1 == 0 then
+        return "ERR|Save blocks not loaded (game may still be starting)\n"
+    end
+
+    local state = {
+        map_bank   = emu:read8(sb1 + SB1_MAP_BANK),
+        map_number = emu:read8(sb1 + SB1_MAP_NUMBER),
+        x          = emu:read16(sb1 + SB1_PLAYER_X),
+        y          = emu:read16(sb1 + SB1_PLAYER_Y),
+        in_battle  = isInBattle(),
+    }
+    return "OK|" .. toJSON(state) .. "\n"
+end
+
 local function processCommand(client, line)
     local args = splitString(line, "|")
     local cmd = args[1]:upper()
@@ -872,6 +902,8 @@ local function processCommand(client, line)
         return handleScreenshot(client)
     elseif cmd == "GAME_STATE" then
         return handleGameState()
+    elseif cmd == "POSITION" then
+        return handlePosition()
     elseif cmd == "PING" then
         return handlePing()
     else
@@ -966,7 +998,7 @@ local function startServer()
     end
 
     log("Listening on port " .. PORT)
-    log("Commands: TAP|<button>[|<frames>], SCREENSHOT, GAME_STATE, PING")
+    log("Commands: TAP|<button>[|<frames>], SCREENSHOT, GAME_STATE, POSITION, PING")
     log("Buttons: A, B, START, SELECT, UP, DOWN, LEFT, RIGHT" ..
         (keyMap.L and ", L, R" or ""))
 

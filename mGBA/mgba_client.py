@@ -179,6 +179,18 @@ class MGBAClient:
             raise MGBAError(f"Unexpected GAME_STATE response: {header}")
         return json.loads(parts[1])
 
+    def position(self) -> dict:
+        """Return just {map_bank, map_number, x, y, in_battle}.
+
+        Cheap enough to poll after every button press, unlike game_state(),
+        which serializes the party, the whole bag and any live battle.
+        """
+        header, _ = self.send("POSITION")
+        parts = header.split("|", 1)
+        if len(parts) < 2:
+            raise MGBAError(f"Unexpected POSITION response: {header}")
+        return json.loads(parts[1])
+
     # ---- convenience accessors -------------------------------------------
 
     def player(self) -> dict:

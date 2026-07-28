@@ -11,12 +11,6 @@
       19
     ]
   ],
-  "SeviiIslands-SixIsland": [
-    [
-      3,
-      19
-    ]
-  ],
   "PalletTown": [
     [
       3,
@@ -61,6 +55,12 @@
     [
       15,
       3
+    ]
+  ],
+  "PewterCity-Gym": [
+    [
+      6,
+      2
     ]
   ]
 }

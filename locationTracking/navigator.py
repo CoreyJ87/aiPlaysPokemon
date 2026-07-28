@@ -2,7 +2,7 @@
 Closed-loop navigation runtime for the LLM player.
 
 Ties together the three pieces:
-    * mGBA server (button taps + screenshots + GAME_STATE),
+    * mGBA server (button taps + screenshots + GAME_STATE), via MGBAClient,
     * LocationTracker (template-match the screenshot to a map + tile),
     * Pathfinder (semantic plans: nearest PC, where to catch X, items, landmarks).
 
@@ -12,98 +12,242 @@ moved as expected, and replan on drift (NPC bumps, ledges, blocked tiles).
 Open-loop direction lists are too brittle for an agent, so nothing here trusts a
 precomputed path beyond the next step.
 
-A battle / dialog (the screenshot stops matching any overworld map) is reported
-as an interruption rather than fought — the operator or a battle module handles
-that.
+Movement accounts for the turn-then-move quirk: a tap in a direction the player
+isn't already facing only rotates the avatar, and the move costs a second tap.
+See _step for how that's disambiguated from a genuinely blocked tile.
+
+A battle / dialog (in_battle, or the screenshot stops matching any overworld
+map) is reported as an interruption rather than fought - the operator or a
+battle module handles that.
 
 Usage:
     from navigator import Navigator
-    nav = Navigator()                 # connects to 127.0.0.1:54321
-    print(nav.goHeal())               # walk into the nearest Pokemon Center
-    print(nav.goCatch("Pikachu"))     # walk to the nearest grass with Pikachu
-    print(nav.goTo("PewterGym"))      # walk to a landmark
+    with Navigator() as nav:              # connects to 127.0.0.1:54321
+        print(nav.goHeal())               # walk into the nearest Pokemon Center
+        print(nav.goCatch("Pikachu"))     # walk to the nearest grass with Pikachu
+        print(nav.goTo("PewterGym"))      # walk to a landmark
+
+    python navigator.py                   # interactive test console
 """
 
-import json
+import contextlib
+import io
 import os
-import socket
 import sys
+import time
 
 from locationTracker import LocationTracker
-from pathfinder import Pathfinder, RETURN_TARGET
+from pathfinder import (BLOCKED, Pathfinder, RETURN_TARGET,
+                        WALK_THROUGH_OBJECT_CATEGORIES)
 
-# Reuse the existing mGBA client helpers for the wire protocol.
+# Reuse the existing mGBA client for the wire protocol.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'mGBA'))
-import mgba_client  # noqa: E402
+from mgba_client import MGBAClient, MGBAError, print_game_state  # noqa: E402
 
 # Inverse of pathfinder.DIRECTIONS, in screen terms.
 STEP_DELTA = {'Up': (0, -1), 'Down': (0, 1), 'Left': (-1, 0), 'Right': (1, 0)}
+OPPOSITE = {'Up': 'Down', 'Down': 'Up', 'Left': 'Right', 'Right': 'Left'}
 
 # Bag/HM name -> field capability (only granted if the matching badge is held).
 HM_CAPABILITIES = {
     'HM01': 'cut', 'HM03': 'surf', 'HM04': 'strength', 'HM06': 'rocksmash'}
 
+# Consecutive blocked steps before we stop rather than burn the step budget.
+BLOCKED_LIMIT = 4
+
+# A tap returns when its frames elapse, but the consequence can lag well past
+# that: walking onto a door plays a warp fade lasting far longer than the tap.
+# Reading position immediately would call that successful warp "blocked", so a
+# step waits this long for the position to settle before giving up on it. A turn
+# in place has no animation to outlast, so it waits far less.
+# Only paid when a step appears to have gone nowhere, which means either a warp
+# fade is running or the tile really is blocked. Every other outcome - a turn, a
+# normal walk - is settled by a single immediate read with no waiting at all.
+SETTLE_DELAY = 0.05
+STEP_SETTLE_POLLS = 24   # ~1.2s, enough for a door warp
+
+# A warp fade blanks the screen for longer than the step that triggered it, and
+# a flat frame is deliberately unmatchable, so give the fade time to clear
+# before concluding we've lost the player.
+FADE_RETRIES = 8
+FADE_RETRY_DELAY = 0.15
+
 
 class Navigator:
     def __init__(self, host='127.0.0.1', port=54321, connect=True,
-                 pathfinder=None, tracker=None, screenshotPath=None):
+                 pathfinder=None, tracker=None, screenshotPath=None,
+                 client=None):
         self.pf = pathfinder or Pathfinder()
         self.tracker = tracker or LocationTracker()
         # Capture into the shared screenshot.png in the repo root (parent of
         # locationTracking) so every tool reads/writes the same file.
         self.screenshotPath = screenshotPath or os.path.normpath(
             os.path.join(os.path.dirname(__file__), '..', 'screenshot.png'))
-        self.sock = None
-        if connect:
-            self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.sock.connect((host, port))
+        self.client = client
+        if self.client is None and connect:
+            self.client = MGBAClient(host=host, port=port)
 
         # Runtime state.
         self.warpStack = []          # [{"map":, "tile":[col,row]}]
         self.collectedItems = set()  # {(map, col, row)}
+        self.facing = None           # 'Up'/'Down'/'Left'/'Right', None if unknown
         self._lastMap = None
+        self._lastTile = None
+        self._wallWarned = set()
+        # Cleared if the server predates POSITION, or the injected client
+        # doesn't implement it; either way we fall back to GAME_STATE.
+        self._hasPosition = hasattr(self.client, 'position')
 
         # Which maps are shared interiors (have an '@return' exit).
         self.sharedInteriors = {
             m for m, conns in self.pf.connections.items()
             if any(c.get('toMap') == RETURN_TARGET for c in conns)}
 
+    def close(self):
+        if self.client is not None:
+            self.client.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, excType, exc, tb):
+        self.close()
+        return False
+
     # ── emulator I/O ──────────────────────────────────────────────────────
     def _gameState(self):
-        header, _ = mgba_client.send_command(self.sock, "GAME_STATE")
-        if header.startswith("ERR"):
+        """Current GAME_STATE dict, or None if unavailable."""
+        if self.client is None:
             return None
         try:
-            return json.loads(header.split("|", 1)[1])
-        except (IndexError, json.JSONDecodeError):
+            return self.client.game_state()
+        except (MGBAError, ConnectionError, ValueError):
             return None
 
     def _screenshot(self):
-        mgba_client.screenshot(self.sock, self.screenshotPath)
+        self.client.screenshot(self.screenshotPath)
         return self.screenshotPath
 
     def _tap(self, button, frames=16):
-        mgba_client.tap(self.sock, button, frames)
+        self.client.tap(button, frames)
+
+    def _positionState(self):
+        """Cheap {map_bank, map_number, x, y, in_battle}, or None.
+
+        Falls back to GAME_STATE against an mgba_server.lua predating POSITION,
+        so an un-reloaded script still works - just slowly, since that reply
+        carries the whole party and bag.
+        """
+        if self.client is None:
+            return None
+        if self._hasPosition:
+            try:
+                return self.client.position()
+            except MGBAError:
+                self._hasPosition = False
+                print("navigator: this mgba_server.lua has no POSITION command. "
+                      "Reload the script in mGBA for much faster stepping; "
+                      "using GAME_STATE meanwhile.")
+            except (ConnectionError, ValueError):
+                return None
+        return self._gameState()
+
+    def _ramPos(self, state=None):
+        """(bank, number, x, y) straight from game RAM, or None.
+
+        This is the authoritative position - unlike the tracker's tile it needs
+        no screenshot and no template match, which makes it the right thing to
+        poll when all we're asking is "did that tap actually move us?".
+        """
+        st = state if state is not None else self._positionState()
+        if not st:
+            return None
+        # POSITION is flat; GAME_STATE nests the same fields under 'player'.
+        p = st.get('player', st)
+        if p.get('x') is None or p.get('y') is None:
+            return None
+        return (p.get('map_bank'), p.get('map_number'), p['x'], p['y'])
 
     # ── observation ───────────────────────────────────────────────────────
+    def observe(self):
+        """One observation: (fix, state). fix is None on battle/dialog/unknown.
+
+        `state` is the cheap POSITION dict, not full GAME_STATE. When the map is
+        registered in mapIds.json this costs one small query and no screenshot
+        at all; only unregistered maps pay for a capture and template match.
+        """
+        state = self._positionState()
+        if state and state.get('in_battle'):
+            return None, state
+
+        fix = self.tracker.locateFromState(state)
+        if fix is None:
+            fix = self._locateByImage(state)
+        if fix:
+            tile = tuple(fix['tile'])
+            self._checkStandingOnWall(fix['mapName'], tile)
+            self._trackWarp(fix['mapName'], tile)
+            self._lastTile = tile
+        return fix, state
+
+    def _checkStandingOnWall(self, mapName, tile):
+        """Warn if we believe we're standing inside a wall.
+
+        The player can't be on a blocked tile, so this means our idea of where
+        they are is wrong - most often because the map image is cropped tighter
+        than the real map and the RAM coordinates need an entry in
+        mapOffsets.json. Cheap, and it catches the whole class of error.
+        """
+        if mapName in self._wallWarned:
+            return
+        info = self.pf.tileData.get(mapName)
+        if not info:
+            return
+        col, row = tile
+        if not (0 <= row < info['heightTiles'] and 0 <= col < info['widthTiles']):
+            self._wallWarned.add(mapName)
+            print(f"navigator: WARNING position {tile} is outside {mapName} "
+                  f"({info['widthTiles']}x{info['heightTiles']}). The map image "
+                  f"and the game's coordinates disagree - see mapOffsets.json.")
+            return
+        if info['tiles'][row][col] == BLOCKED:
+            self._wallWarned.add(mapName)
+            print(f"navigator: WARNING {mapName} tile {tile} is marked blocked, "
+                  f"but that's where we think we're standing. The map image is "
+                  f"probably offset from the game grid; measure it with\n"
+                  f"          python mapIdMapper.py --offset {mapName} "
+                  f"<imageCol> <imageRow>")
+
+    def _locateByImage(self, state):
+        """Screenshot and template-match, riding out a warp fade if we hit one.
+
+        Walking through a door starts a fade that outlasts the step, and a
+        flat frame is deliberately unmatchable, so a single capture right after
+        a warp reliably fails. Retry briefly before calling it an interruption.
+        """
+        for attempt in range(FADE_RETRIES):
+            fix = self.tracker.locatePlayer(self._screenshot(), gameState=state)
+            if fix is not None:
+                return fix
+            if attempt + 1 < FADE_RETRIES:
+                time.sleep(FADE_RETRY_DELAY)
+                state = self._positionState() or state
+        return None
+
     def locate(self):
         """Observe the world: returns a fix dict or None (battle/dialog/unknown)."""
-        gs = self._gameState() if self.sock else None
-        shot = self._screenshot()
-        fix = self.tracker.locatePlayer(shot, gameState=gs)
-        if fix:
-            self._trackWarp(fix['mapName'], fix['tile'])
-        return fix
+        return self.observe()[0]
 
     def _trackWarp(self, mapName, tile):
         """Maintain the warp stack across shared-interior entries/exits."""
         if mapName == self._lastMap:
             return
-        if mapName in self.sharedInteriors and self._lastMap is not None:
-            # Entered a shared interior — remember where we came from.
+        if (mapName in self.sharedInteriors and self._lastMap is not None
+                and self._lastTile is not None):
+            # Entered a shared interior - remember where we came from.
             self.warpStack.append({"map": self._lastMap, "tile": list(self._lastTile)})
         elif self.warpStack and mapName == self.warpStack[-1]["map"]:
-            # Returned to the map on top of the stack — pop it.
+            # Returned to the map on top of the stack - pop it.
             self.warpStack.pop()
         self._lastMap = mapName
 
@@ -121,6 +265,105 @@ class Navigator:
             if hm in owned and badges >= gate.get(cap, 8):
                 caps.add(cap)
         return caps
+
+    # ── movement primitives ───────────────────────────────────────────────
+    def _step(self, direction):
+        """Walk one tile, working around the turn-then-move quirk.
+
+        A tap in a direction the player isn't facing only rotates the avatar, so
+        a tap that leaves the position unchanged is ambiguous: we either just
+        turned, or the tile ahead is blocked. Rather than dig facing out of RAM,
+        this taps and watches the RAM position - the cheapest reliable oracle we
+        have. Because a tap always *ends* with the player facing `direction`, the
+        cached facing collapses the common case (walking a straight line) back to
+        one tap per tile, and only a change of direction pays for two.
+
+        Returns 'moved', 'blocked', or 'unknown' (no position feed to verify).
+        """
+        before = self._ramPos()
+        wasFacing = self.facing
+        self._tap(direction)
+        self.facing = direction
+
+        if before is None:
+            # No position feed to verify against; the caller's re-observe decides.
+            return 'unknown'
+
+        if wasFacing != direction:
+            # That tap was spent turning, so the position is *expected* to be
+            # unchanged. Check once and move on - waiting out the warp budget
+            # here would spend 1.5s per direction change on a move that was
+            # never coming.
+            pos = self._ramPos()
+            if pos is not None and pos != before:
+                return self._moved(before, pos)   # we were already facing it
+            self._tap(direction)                  # now the actual step
+
+        # RAM commits to the destination tile as the walk begins, so a real move
+        # shows up on the very next read. Only a warp (a fade far longer than
+        # the tap) or a genuine block leaves it unchanged - and waiting is the
+        # only thing that tells those two apart.
+        pos = self._ramPos()
+        if pos is not None and pos != before:
+            return self._moved(before, pos)
+        after = self._awaitChange(before, STEP_SETTLE_POLLS)
+        if after != before:
+            return self._moved(before, after)
+
+        # Drop the cached facing: if it was stale (a cutscene or NPC spun us)
+        # the next attempt re-probes instead of re-deciding "blocked" forever.
+        self.facing = None
+        return 'blocked'
+
+    def _awaitChange(self, before, polls):
+        """Poll the RAM position until it changes, or we run out of patience.
+
+        Returns the settled position - equal to `before` when nothing happened,
+        which is the only thing that legitimately means "blocked". Readings of
+        None (GAME_STATE briefly unavailable mid-transition) are ignored rather
+        than mistaken for movement.
+        """
+        pos = self._ramPos()
+        for _ in range(polls):
+            if pos is not None and pos != before:
+                return pos
+            time.sleep(SETTLE_DELAY)
+            pos = self._ramPos()
+        return pos if pos is not None else before
+
+    def _moved(self, before, after):
+        if after[:2] != before[:2]:
+            # Warped to another map - the game picks our facing, so forget ours.
+            self.facing = None
+        return 'moved'
+
+    def _face(self, direction):
+        """Turn to face `direction` without leaving the current tile.
+
+        Needed before an interact press: if we already face that way the tap
+        would walk us off the approach tile instead of turning us, so this
+        verifies and walks back when that happens. Returns True when we end up
+        on the tile we started on, facing `direction`.
+        """
+        if self.facing == direction:
+            return True
+        before = self._ramPos()
+        self._tap(direction)
+        self.facing = direction
+        # A turn is instant and a walk registers immediately, so one read tells
+        # us which happened - no waiting needed.
+        if before is None or self._ramPos() == before:
+            return True
+
+        # We were already facing that way and the tap walked us forward. Turn
+        # back (1 tap), step back (2nd tap), then turn to the target - that last
+        # tap can't move us because we're now facing the opposite way.
+        back = OPPOSITE[direction]
+        self._tap(back)
+        self._tap(back)
+        self._tap(direction)
+        self.facing = direction
+        return self._ramPos() == before
 
     # ── high-level goals ──────────────────────────────────────────────────
     def goTo(self, landmarkId, maxSteps=400):
@@ -144,19 +387,89 @@ class Navigator:
             collected=self.collectedItems),
             f"collect {itemName}", maxSteps)
 
+    def goToTile(self, targetMap, targetTile, interact=False, label=None,
+                 maxSteps=400):
+        """Walk to an explicit map + tile (what the interactive menu dispatches)."""
+        targetTile = tuple(targetTile)
+        return self._run(lambda m, t, caps: self.pf.planToTile(
+            m, t, targetMap, targetTile, capabilities=caps,
+            warpStack=self.warpStack, interact=interact),
+            label or f"go to {targetMap} {targetTile}", maxSteps)
+
+    # ── destination survey ────────────────────────────────────────────────
+    def nearby(self, fix=None, gameState=None, quiet=True):
+        """Rank every known destination by walking distance from where we stand.
+
+        Returns a list of dicts sorted by step count, reachable ones first:
+            {kind, category, name, map, tile, interact, steps, found, reason}
+        The tile data is small enough that planning to every candidate outright
+        is cheaper than any cleverness about which ones are plausibly close.
+
+        Unreachable candidates are expected here (a survey asks about places we
+        can't get to yet), so `quiet` swallows the planner's per-failure logging
+        - the reason survives on each entry either way.
+        """
+        if fix is None:
+            fix, _state = self.observe()
+        if fix is None:
+            return []
+        curMap, curTile = fix['mapName'], tuple(fix['tile'])
+        # Capabilities need the bag, so this one wants the full state.
+        caps = self.inferCapabilities(
+            gameState if gameState is not None else self._gameState())
+
+        candidates = []
+        for category, entries in self.pf.objectIndex.items():
+            interact = category not in WALK_THROUGH_OBJECT_CATEGORIES
+            for (m, c, r, name) in entries:
+                candidates.append(('object', category, name, m, (c, r), interact))
+        for itemName, entries in self.pf.itemIndex.items():
+            for (m, c, r) in entries:
+                if (m, c, r) in self.collectedItems:
+                    continue
+                candidates.append(('item', 'item', itemName, m, (c, r), True))
+
+        results = []
+        sink = io.StringIO()
+        for (kind, category, name, m, tile, interact) in candidates:
+            with (contextlib.redirect_stdout(sink) if quiet
+                  else contextlib.nullcontext()):
+                plan = self.pf.planToTile(curMap, curTile, m, tile,
+                                          capabilities=caps,
+                                          warpStack=self.warpStack,
+                                          interact=interact)
+            results.append({
+                'kind': kind, 'category': category, 'name': name,
+                'map': m, 'tile': tile, 'interact': interact,
+                'found': plan['found'],
+                'steps': len(plan['directions']) if plan['found'] else None,
+                'reason': plan['reason'],
+            })
+        results.sort(key=lambda e: (not e['found'], e['steps'] if e['found'] else 0,
+                                    e['name'].lower()))
+        return results
+
+    def species(self):
+        """Species tagged in grass patches, for the interactive catch menu."""
+        return sorted(self.pf.speciesIndex.keys())
+
     # ── the verify / replan loop ──────────────────────────────────────────
     def _run(self, planFn, description, maxSteps):
         steps = 0
+        blocked = 0
+        # Field-move capabilities come from the bag, which POSITION doesn't
+        # carry and which can't change while we're walking, so pay for the full
+        # GAME_STATE once here instead of on every step.
+        caps = self.inferCapabilities(self._gameState())
         while steps < maxSteps:
-            fix = self.locate()
+            fix, state = self.observe()
             if fix is None:
                 return self._result("interrupted", description, steps,
-                                    "lost track of player (battle, dialog, or "
-                                    "unknown screen) — operator should resolve")
+                                    "in battle" if state and state.get('in_battle')
+                                    else "lost track of player (dialog or unknown "
+                                    "screen) - operator should resolve")
             curMap, curTile = fix['mapName'], tuple(fix['tile'])
-            self._lastTile = curTile
 
-            caps = self.inferCapabilities(self._gameState() if self.sock else None)
             plan = planFn(curMap, curTile, caps)
             if not plan['found']:
                 return self._result("no_route", description, steps, plan['reason'])
@@ -164,28 +477,28 @@ class Navigator:
             if not plan['directions']:
                 # Arrived. Interact if the target requires it.
                 if plan.get('interact'):
-                    self._tap(plan['interact']['face'])  # turn to face
-                    self._tap('A')                       # talk / pick up
+                    if not self._face(plan['interact']['face']):
+                        # Turning knocked us off the approach tile and we
+                        # couldn't get back (ledge?) - replan from where we are.
+                        continue
+                    self._tap(plan['interact'].get('press', 'A'))
                     if plan['target'].get('map') == curMap:
                         self._markCollectedIfItem(plan)
                 return self._result("arrived", description, steps, "reached target")
 
-            # Take exactly one step, then re-observe.
-            move = plan['directions'][0]
-            expected = self._expectedTile(curTile, move)
-            self._tap(move)
+            # Take exactly one step, then let the next pass re-observe.
+            outcome = self._step(plan['directions'][0])
             steps += 1
-
-            after = self.locate()
-            if after is None:
-                return self._result("interrupted", description, steps,
-                                    "screen changed mid-move (encounter/dialog)")
-            movedTile = tuple(after['tile'])
-            mapChanged = after['mapName'] != curMap
-            if not mapChanged and movedTile == curTile:
-                # Didn't move (blocked / NPC). Replanning will route around it.
+            if outcome == 'blocked':
+                blocked += 1
+                if blocked >= BLOCKED_LIMIT:
+                    return self._result(
+                        "stuck", description, steps,
+                        f"blocked {blocked}x heading {plan['directions'][0]} from "
+                        f"{curMap} {curTile}")
+                # Replanning routes around whatever is in the way.
                 continue
-            # Otherwise position advanced (or we warped) — loop replans from here.
+            blocked = 0
         return self._result("gave_up", description, steps, "exceeded step budget")
 
     def _expectedTile(self, tile, move):
@@ -202,11 +515,186 @@ class Navigator:
                 "reason": reason}
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# Interactive test console
+# ─────────────────────────────────────────────────────────────────────────
+
+HELP = """Commands:
+  <number>            walk to that numbered destination
+  goto <name>         walk to a landmark / named object
+  heal                walk to the nearest Pokemon Center
+  catch <species>     walk to the nearest grass holding that species
+  collect <item>      walk to the nearest uncollected item
+  step <dir>          take one verified step (u/d/l/r) - exercises the
+                      turn-then-move handling on its own
+  face <dir>          turn in place without stepping
+  tap <button> [n]    raw button tap, no verification
+  where               re-observe and print the current fix
+  state               pretty-print GAME_STATE
+  species             list species tagged in grass patches
+  refresh             re-observe and redraw the destination list
+  help / quit
+"""
+
+DIR_ALIASES = {'u': 'Up', 'up': 'Up', 'd': 'Down', 'down': 'Down',
+               'l': 'Left', 'left': 'Left', 'r': 'Right', 'right': 'Right'}
+
+
+def _printFix(nav, fix, state, gameState=None):
+    if fix is None:
+        if state and state.get('in_battle'):
+            print("Location: IN BATTLE (no overworld fix)")
+        else:
+            print("Location: unknown - dialog, cutscene, or unmatched screen")
+    else:
+        inst = f"  [{fix['instance']}]" if fix.get('instance') else ""
+        print(f"Location: {fix['mapName']} tile {tuple(fix['tile'])}  "
+              f"via {fix.get('source', '?')}{inst}")
+    if state:
+        # POSITION is flat; GAME_STATE nests these under 'player'.
+        p = state.get('player', state)
+        extra = ""
+        if gameState:
+            gp = gameState.get('player', {})
+            extra = (f"  badges={gp.get('badges')} "
+                     f"party={gameState.get('party_count')}")
+        print(f"RAM:      bank={p.get('map_bank')} num={p.get('map_number')} "
+              f"pos=({p.get('x')}, {p.get('y')}){extra}")
+    if fix is None and state:
+        p = state.get('player', state)
+        bank, num = p.get('map_bank'), p.get('map_number')
+        if bank is not None and not state.get('in_battle'):
+            print(f"Hint:     RAM knows the id ({bank},{num}) but no map is "
+                  f"registered for it. Stand still and run:\n"
+                  f"          python mapIdMapper.py --set <MapName>")
+    print(f"Facing:   {nav.facing or 'unknown'}"
+          + (f"   warp stack: {nav.warpStack}" if nav.warpStack else ""))
+
+
+def _printDestinations(entries):
+    if not entries:
+        print("\nNo destinations known (no objects or items in tile data).")
+        return
+    print("\nNearby destinations:")
+    for i, e in entries:
+        tag = f"[{e['category']}]"
+        dist = f"{e['steps']:>4} steps" if e['found'] else "  no route"
+        print(f"  {i:>3}. {dist}  {tag:<16} {e['name']:<22} "
+              f"{e['map']} {e['tile']}")
+
+
+def interactive(nav):
+    print("=== Navigator test console ===")
+    print(HELP)
+
+    entries = []
+
+    def refresh():
+        fix, state = nav.observe()
+        gs = nav._gameState()   # interactive, so the richer display is worth it
+        print()
+        _printFix(nav, fix, state, gs)
+        found = nav.nearby(fix=fix, gameState=gs) if fix else []
+        listed = list(enumerate(found, 1))
+        _printDestinations(listed)
+        return listed
+
+    entries = refresh()
+
+    while True:
+        try:
+            line = input("\n> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            break
+        if not line:
+            continue
+        parts = line.split()
+        cmd = parts[0].lower()
+        arg = " ".join(parts[1:]) if len(parts) > 1 else None
+
+        try:
+            if cmd.isdigit():
+                idx = int(cmd)
+                match = dict(entries).get(idx)
+                if match is None:
+                    print(f"No destination {idx}. Try 'refresh'.")
+                    continue
+                if not match['found']:
+                    print(f"{match['name']}: no route ({match['reason']})")
+                    continue
+                print(f"-> {match['name']} on {match['map']} {match['tile']}")
+                print(nav.goToTile(match['map'], match['tile'],
+                                   interact=match['interact'],
+                                   label=f"go to {match['name']}"))
+                entries = refresh()
+            elif cmd == 'goto' and arg:
+                print(nav.goTo(arg))
+                entries = refresh()
+            elif cmd == 'heal':
+                print(nav.goHeal())
+                entries = refresh()
+            elif cmd == 'catch' and arg:
+                print(nav.goCatch(arg))
+                entries = refresh()
+            elif cmd == 'collect' and arg:
+                print(nav.collect(arg))
+                entries = refresh()
+            elif cmd == 'step' and arg:
+                d = DIR_ALIASES.get(arg.lower())
+                if d is None:
+                    print("Usage: step <up|down|left|right>")
+                    continue
+                print(f"step {d}: {nav._step(d)}  (now facing {nav.facing})")
+            elif cmd == 'face' and arg:
+                d = DIR_ALIASES.get(arg.lower())
+                if d is None:
+                    print("Usage: face <up|down|left|right>")
+                    continue
+                print(f"face {d}: {'ok' if nav._face(d) else 'displaced'}")
+            elif cmd == 'tap' and arg:
+                tapParts = arg.split()
+                frames = int(tapParts[1]) if len(tapParts) > 1 else 16
+                nav._tap(tapParts[0].upper(), frames)
+                nav.facing = DIR_ALIASES.get(tapParts[0].lower(), nav.facing)
+                print(f"tapped {tapParts[0].upper()} for {frames} frames")
+            elif cmd == 'where':
+                fix, state = nav.observe()
+                print()
+                _printFix(nav, fix, state, nav._gameState())
+            elif cmd == 'state':
+                gs = nav._gameState()
+                if gs is None:
+                    print("GAME_STATE unavailable.")
+                else:
+                    print_game_state(gs)
+            elif cmd == 'species':
+                names = nav.species()
+                print(", ".join(names) if names else "(none tagged)")
+            elif cmd == 'refresh':
+                entries = refresh()
+            elif cmd in ('help', '?'):
+                print(HELP)
+            elif cmd in ('quit', 'exit', 'q'):
+                break
+            else:
+                print(f"Unknown command: {cmd!r}. Type 'help'.")
+        except (MGBAError, ValueError) as e:
+            print(f"Error: {e}")
+        except ConnectionError as e:
+            print(f"Connection lost: {e}")
+            break
+
+    print("Disconnected.")
+
+
 def main():
-    nav = Navigator()
-    if len(sys.argv) > 1:
-        cmd = sys.argv[1]
-        arg = sys.argv[2] if len(sys.argv) > 2 else None
+    argv = sys.argv[1:]
+    with Navigator() as nav:
+        if not argv:
+            interactive(nav)
+            return
+        cmd = argv[0].lower()
+        arg = argv[1] if len(argv) > 1 else None
         if cmd == 'heal':
             print(nav.goHeal())
         elif cmd == 'catch' and arg:
@@ -215,11 +703,14 @@ def main():
             print(nav.goTo(arg))
         elif cmd == 'collect' and arg:
             print(nav.collect(arg))
+        elif cmd == 'where':
+            print(nav.locate())
+        elif cmd == 'nearby':
+            _printDestinations(list(enumerate(nav.nearby(), 1)))
         else:
             print("Usage: python navigator.py [heal | catch <species> | "
-                  "goto <landmark> | collect <item>]")
-    else:
-        print(nav.locate())
+                  "goto <landmark> | collect <item> | where | nearby]")
+            print("       (no arguments starts the interactive console)")
 
 
 if __name__ == '__main__':

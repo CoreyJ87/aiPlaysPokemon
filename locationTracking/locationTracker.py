@@ -13,11 +13,11 @@ class LocationTracker:
     coordinate grid, a match origin converts directly to a tile (pixel // 16)
     with no alignment step.  Two refinements make it usable at scale:
 
-      * Neighbor-restricted search — only the current map and its connection
+      * Neighbor-restricted search - only the current map and its connection
         neighbors are matched first; a full scan happens only when confidence
         is low.  This is far faster than scanning ~180 maps every call.
 
-      * Instance disambiguation — shared interiors (Pokemon Center / Mart) all
+      * Instance disambiguation - shared interiors (Pokemon Center / Mart) all
         use one image, so template matching alone can't tell which city's PC you
         are in.  When given a GAME_STATE dict, map_bank/map_number resolves the
         instance via the registry in connections.json.
@@ -31,6 +31,23 @@ class LocationTracker:
 
     # If the best neighbor match is below this, fall back to a full scan.
     CONFIDENCE_THRESHOLD = 0.90
+
+    # Below this, a "best" match is noise and gets rejected outright. Template
+    # matching always returns *something* - the arg-max over ~180 maps is never
+    # empty - so without a floor an unmatchable screen (a small interior, a
+    # dialog, a fade) silently resolves to whichever map is biggest, because a
+    # 1920x1920 island has a million more candidate offsets to find a spurious
+    # correlation in than a 768x640 town does. Observed real matches sit at
+    # 0.95-0.999; observed false positives at 0.77-0.85.
+    MIN_CONFIDENCE = 0.90
+
+    # A flat screen (fade to black during a warp, a full-screen dialog, a battle
+    # transition) has no texture to match on, and normalized correlation scores a
+    # uniform patch against a uniform region as a *perfect* 1.000. Big maps have
+    # large blank areas - SeviiIslands-FiveIsland measures std 0.0 in places -
+    # so a fading screen reliably "matches" one of them at full confidence. Real
+    # overworld frames measure std 30-48, so this rejects flat frames outright.
+    MIN_SCREEN_STDDEV = 10.0
 
     def __init__(self, mapsDirectory=None, connectionDataDir=None):
         if mapsDirectory is None:
@@ -51,7 +68,13 @@ class LocationTracker:
         # the primary way we resolve map identity; template matching is only
         # used for position within the resolved map (see locatePlayer).
         self._mapNameByBankNum = {}
+        self._ambiguousIds = {}       # (bank, number) -> [conflicting names]
+        self._undersizedWarned = set()
         self._loadMapIds(connectionDataDir)
+
+        # mapName -> (dx, dy) correcting RAM coords onto the image grid.
+        self.mapOffsets = {}
+        self._loadMapOffsets(connectionDataDir)
 
         self.currentMap = None
         self.currentPosition = None  # (x, y) pixel coords of player on the map
@@ -99,10 +122,24 @@ class LocationTracker:
             return
         with open(idsPath, 'r') as f:
             data = json.load(f)
+        claims = {}  # (bank, number) -> [mapName, ...]
         for mapName, pairs in data.items():
             for pair in pairs:
                 if len(pair) == 2:
-                    self._mapNameByBankNum[(pair[0], pair[1])] = mapName
+                    claims.setdefault((pair[0], pair[1]), []).append(mapName)
+
+        # A (bank, number) claimed by two different maps is bad data - one of
+        # them was recorded from a mislocated fix. Silently letting the last
+        # writer win makes the game world teleport, so drop the pair instead and
+        # let template matching decide; it's wrong far more visibly.
+        for bankNum, names in claims.items():
+            if len(names) == 1:
+                self._mapNameByBankNum[bankNum] = names[0]
+            else:
+                self._ambiguousIds[bankNum] = sorted(names)
+                print(f'LocationTracker: WARNING map id {bankNum} is claimed by '
+                      f'{len(names)} maps {sorted(names)} - ignoring it. Fix '
+                      f'mapIds.json; one entry was learned from a bad fix.')
 
     def locatePlayer(self, screenshotPath, gameState=None):
         """
@@ -114,11 +151,19 @@ class LocationTracker:
                 map_bank/map_number resolve the exact instance for shared maps.
 
         Returns:
-            dict {mapName, position, tile, confidence, instance} or None.
+            dict {mapName, position, tile, confidence, instance, source} or None.
+            None means "I don't know" (battle, dialog, fade, or an unmatchable
+            screen) - never a low-confidence guess.
         """
         screenshot = cv2.imread(screenshotPath)
         if screenshot is None:
             print(f'LocationTracker: Could not read screenshot at {screenshotPath}')
+            return None
+
+        detail = float(cv2.cvtColor(screenshot, cv2.COLOR_BGR2GRAY).std())
+        if detail < self.MIN_SCREEN_STDDEV:
+            print(f'LocationTracker: screen is flat (stddev {detail:.1f}) - mid '
+                  f'warp fade, dialog, or transition. Reporting unknown.')
             return None
 
         # Phase 0: if game RAM tells us the exact map, that IS the identity.
@@ -127,16 +172,27 @@ class LocationTracker:
         # available. We still template-match, but only against that one map, to
         # recover the player's pixel position within it.
         stateMap = self._mapFromState(gameState)
+        ramTile = self._tileFromState(gameState, stateMap)
+        best = None
         if stateMap is not None:
             best = self._matchAgainst(screenshot, [stateMap])
-            if best is None:
+            if best is not None and best[1] >= self.MIN_CONFIDENCE:
+                self._checkRamAgreement(stateMap, best, ramTile)
+            elif ramTile is not None:
+                # The image can't localize us but RAM still knows exactly where
+                # we are. This is the normal case indoors: a room smaller than
+                # the 240x160 screen doesn't scroll, so the screenshot is never
+                # a sub-image of the map and matching is geometrically
+                # impossible. Trusting RAM here is what keeps interiors working.
+                return self._buildFix(stateMap, ramTile, 1.0, gameState,
+                                      source='ram')
+            else:
                 print(f'LocationTracker: game state map {stateMap!r} did not '
-                      f'match the screenshot; falling back to template search.')
+                      f'match the screenshot and no RAM tile was available; '
+                      f'falling back to template search.')
+                best = None
 
         # Phase 1: try the current map + its neighbors (fast path).
-        else:
-            best = None
-
         if best is None:
             candidates = self._neighborCandidates()
             best = self._matchAgainst(screenshot, candidates) if candidates else None
@@ -152,6 +208,12 @@ class LocationTracker:
             return None
 
         mapName, confidence, location = best
+        if confidence < self.MIN_CONFIDENCE:
+            print(f'LocationTracker: best match {mapName} at conf '
+                  f'{confidence:.3f} is below {self.MIN_CONFIDENCE} - reporting '
+                  f'unknown rather than guessing.')
+            return None
+
         playerX = location[0] + self.PLAYER_OFFSET_X
         playerY = location[1] + self.PLAYER_OFFSET_Y
         tile = (playerX // self.TILE_SIZE, playerY // self.TILE_SIZE)
@@ -174,7 +236,106 @@ class LocationTracker:
             'tile': tile,
             'confidence': confidence,
             'instance': instance,
+            'source': 'template',
         }
+
+    def _loadMapOffsets(self, connectionDataDir):
+        """Load per-map RAM->image tile corrections (see mapOffsets.json)."""
+        path = os.path.join(connectionDataDir, 'mapOffsets.json')
+        if not os.path.exists(path):
+            return
+        with open(path, 'r') as f:
+            data = json.load(f)
+        for mapName, off in data.items():
+            if mapName.startswith('_'):      # comment keys
+                continue
+            if isinstance(off, (list, tuple)) and len(off) == 2:
+                self.mapOffsets[mapName] = (int(off[0]), int(off[1]))
+        if self.mapOffsets:
+            print(f'LocationTracker: {len(self.mapOffsets)} map coordinate '
+                  f'offset(s) loaded.')
+
+    def locateFromState(self, gameState):
+        """Fix the player from RAM alone - no screenshot, no template match.
+
+        Returns None when the map isn't registered in mapIds.json, in which case
+        the caller still needs locatePlayer(). When it does work it is both
+        faster and *more* correct than matching: RAM updates to the destination
+        tile the moment a step begins, while the screen spends the next several
+        frames animating the walk, so a screenshot taken mid-step matches the
+        tile the player is leaving rather than the one they're entering.
+        """
+        mapName = self._mapFromState(gameState)
+        if mapName is None:
+            return None
+        tile = self._tileFromState(gameState, mapName)
+        if tile is None:
+            return None
+        return self._buildFix(mapName, tile, 1.0, gameState, source='ram')
+
+    def _buildFix(self, mapName, tile, confidence, gameState, source):
+        """Assemble a fix (and update cached state) from an already-known tile."""
+        instance = self.disambiguateInstance(mapName, gameState)
+        position = (tile[0] * self.TILE_SIZE, tile[1] * self.TILE_SIZE)
+
+        self.currentMap = mapName
+        self.currentPosition = position
+        self.currentTile = tile
+        self.currentConfidence = confidence
+        self.currentInstance = instance
+        self._lastMapName = mapName
+
+        print(f'LocationTracker: {mapName} tile {tile} '
+              f'(from {source}{", " + instance if instance else ""})')
+
+        return {
+            'mapName': mapName,
+            'position': position,
+            'tile': tile,
+            'confidence': confidence,
+            'instance': instance,
+            'source': source,
+        }
+
+    def _tileFromState(self, gameState, mapName=None):
+        """Player's (col, row) on the map image, from RAM, or None.
+
+        SaveBlock1's x/y are map-local tile coordinates on the same grid the map
+        images use, so this is normally the image tile outright (and
+        _checkRamAgreement polices that claim as you play). Rips cropped tighter
+        than the real map need a correction, which mapOffsets.json supplies.
+        """
+        if not gameState:
+            return None
+        player = gameState.get('player', gameState)
+        x, y = player.get('x'), player.get('y')
+        if x is None or y is None:
+            return None
+        dx, dy = self.mapOffsets.get(mapName, (0, 0))
+        return (x - dx, y - dy)
+
+    def _checkRamAgreement(self, mapName, best, ramTile):
+        """Warn when a confident template match disagrees with RAM coordinates.
+
+        Both should name the same tile. A persistent disagreement on one map
+        means that map image's origin is offset from the game's coordinate
+        space, which would make the RAM fallback above wrong for it.
+        """
+        if ramTile is None:
+            return
+        _name, _conf, location = best
+        tile = ((location[0] + self.PLAYER_OFFSET_X) // self.TILE_SIZE,
+                (location[1] + self.PLAYER_OFFSET_Y) // self.TILE_SIZE)
+        # A one-tile gap is just the walk animation: RAM commits to the
+        # destination tile as the step starts, so a screenshot taken mid-step
+        # legitimately shows the previous tile. Only a larger, structural gap
+        # means the image origin is actually misaligned with the game grid.
+        drift = max(abs(tile[0] - ramTile[0]), abs(tile[1] - ramTile[1]))
+        if drift > 1 and mapName not in self._undersizedWarned:
+            self._undersizedWarned.add(mapName)
+            print(f'LocationTracker: WARNING {mapName} template tile {tile} != '
+                  f'RAM tile {ramTile}. The map image origin looks offset from '
+                  f'the game grid; indoor RAM-based fixes on it will be wrong.')
 
     def _neighborCandidates(self):
         """Current map + its connection neighbors, in match-priority order."""
@@ -194,6 +355,17 @@ class LocationTracker:
                 continue
             if (mapImage.shape[0] < screenshot.shape[0] or
                     mapImage.shape[1] < screenshot.shape[1]):
+                # Smaller than the screen, so it can never contain the
+                # screenshot. That's most interiors; they're located from RAM
+                # coordinates instead (see locatePlayer). Say so once per map
+                # rather than skipping in silence.
+                if mapName not in self._undersizedWarned:
+                    self._undersizedWarned.add(mapName)
+                    print(f'LocationTracker: {mapName} '
+                          f'({mapImage.shape[1]}x{mapImage.shape[0]}) is smaller '
+                          f'than the {screenshot.shape[1]}x{screenshot.shape[0]} '
+                          f'screen - not template-matchable, needs a mapIds.json '
+                          f'entry to be locatable.')
                 continue
             result = cv2.matchTemplate(mapImage, screenshot, cv2.TM_CCOEFF_NORMED)
             _, maxVal, _, maxLoc = cv2.minMaxLoc(result)

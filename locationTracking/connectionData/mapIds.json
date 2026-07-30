@@ -1,66 +1,944 @@
 {
-  "ViridianCity": [
+  "0-0-BattleColosseum_2P": [
     [
-      3,
+      0,
+      0
+    ]
+  ],
+  "0-1-TradeCenter": [
+    [
+      0,
       1
     ]
   ],
-  "Route01": [
+  "0-2-RecordCorner": [
     [
-      3,
-      19
-    ]
-  ],
-  "PalletTown": [
-    [
-      3,
-      0
-    ],
-    [
-      4,
-      0
-    ]
-  ],
-  "PewterCity": [
-    [
-      3,
+      0,
       2
     ]
   ],
-  "Route02": [
+  "0-3-BattleColosseum_4P": [
     [
-      3,
-      20
+      0,
+      3
     ]
   ],
-  "ViridianForest": [
+  "0-4-UnionRoom": [
+    [
+      0,
+      4
+    ]
+  ],
+  "1-0-ViridianForest": [
     [
       1,
       0
     ]
   ],
-  "Route22": [
+  "1-1-MtMoon_1F": [
+    [
+      1,
+      1
+    ]
+  ],
+  "1-2-MtMoon_B1F": [
+    [
+      1,
+      2
+    ]
+  ],
+  "1-3-MtMoon_B2F": [
+    [
+      1,
+      3
+    ]
+  ],
+  "1-4-SSAnne_Exterior": [
+    [
+      1,
+      4
+    ]
+  ],
+  "1-5-SSAnne_1F_Corridor": [
+    [
+      1,
+      5
+    ]
+  ],
+  "1-6-SSAnne_2F_Corridor": [
+    [
+      1,
+      6
+    ]
+  ],
+  "1-7-SSAnne_3F_Corridor": [
+    [
+      1,
+      7
+    ]
+  ],
+  "1-8-SSAnne_B1F_Corridor": [
+    [
+      1,
+      8
+    ]
+  ],
+  "1-9-SSAnne_Deck": [
+    [
+      1,
+      9
+    ]
+  ],
+  "1-10-SSAnne_Kitchen": [
+    [
+      1,
+      10
+    ]
+  ],
+  "1-11-SSAnne_CaptainsOffice": [
+    [
+      1,
+      11
+    ]
+  ],
+  "1-12-SSAnne_1F_Room1": [
+    [
+      1,
+      12
+    ]
+  ],
+  "1-13-SSAnne_1F_Room2": [
+    [
+      1,
+      13
+    ]
+  ],
+  "1-14-SSAnne_1F_Room3": [
+    [
+      1,
+      14
+    ]
+  ],
+  "1-15-SSAnne_1F_Room4": [
+    [
+      1,
+      15
+    ]
+  ],
+  "1-16-SSAnne_1F_Room5": [
+    [
+      1,
+      16
+    ]
+  ],
+  "1-17-SSAnne_1F_Room7": [
+    [
+      1,
+      17
+    ]
+  ],
+  "1-18-SSAnne_2F_Room1": [
+    [
+      1,
+      18
+    ]
+  ],
+  "1-19-SSAnne_2F_Room2": [
+    [
+      1,
+      19
+    ]
+  ],
+  "1-20-SSAnne_2F_Room3": [
+    [
+      1,
+      20
+    ]
+  ],
+  "1-21-SSAnne_2F_Room4": [
+    [
+      1,
+      21
+    ]
+  ],
+  "1-22-SSAnne_2F_Room5": [
+    [
+      1,
+      22
+    ]
+  ],
+  "1-23-SSAnne_2F_Room6": [
+    [
+      1,
+      23
+    ]
+  ],
+  "1-24-SSAnne_B1F_Room1": [
+    [
+      1,
+      24
+    ]
+  ],
+  "1-25-SSAnne_B1F_Room2": [
+    [
+      1,
+      25
+    ]
+  ],
+  "1-26-SSAnne_B1F_Room3": [
+    [
+      1,
+      26
+    ]
+  ],
+  "1-27-SSAnne_B1F_Room4": [
+    [
+      1,
+      27
+    ]
+  ],
+  "1-28-SSAnne_B1F_Room5": [
+    [
+      1,
+      28
+    ]
+  ],
+  "1-29-SSAnne_1F_Room6": [
+    [
+      1,
+      29
+    ]
+  ],
+  "1-30-UndergroundPath_NorthEntrance": [
+    [
+      1,
+      30
+    ]
+  ],
+  "1-31-UndergroundPath_NorthSouthTunnel": [
+    [
+      1,
+      31
+    ]
+  ],
+  "1-32-UndergroundPath_SouthEntrance": [
+    [
+      1,
+      32
+    ]
+  ],
+  "1-33-UndergroundPath_WestEntrance": [
+    [
+      1,
+      33
+    ]
+  ],
+  "1-34-UndergroundPath_EastWestTunnel": [
+    [
+      1,
+      34
+    ]
+  ],
+  "1-35-UndergroundPath_EastEntrance": [
+    [
+      1,
+      35
+    ]
+  ],
+  "1-36-DiglettsCave_NorthEntrance": [
+    [
+      1,
+      36
+    ]
+  ],
+  "1-37-DiglettsCave_B1F": [
+    [
+      1,
+      37
+    ]
+  ],
+  "1-38-DiglettsCave_SouthEntrance": [
+    [
+      1,
+      38
+    ]
+  ],
+  "1-39-VictoryRoad_1F": [
+    [
+      1,
+      39
+    ]
+  ],
+  "1-40-VictoryRoad_2F": [
+    [
+      1,
+      40
+    ]
+  ],
+  "1-41-VictoryRoad_3F": [
+    [
+      1,
+      41
+    ]
+  ],
+  "1-42-RocketHideout_B1F": [
+    [
+      1,
+      42
+    ]
+  ],
+  "1-43-RocketHideout_B2F": [
+    [
+      1,
+      43
+    ]
+  ],
+  "1-44-RocketHideout_B3F": [
+    [
+      1,
+      44
+    ]
+  ],
+  "1-45-RocketHideout_B4F": [
+    [
+      1,
+      45
+    ]
+  ],
+  "1-46-RocketHideout_Elevator": [
+    [
+      1,
+      46
+    ]
+  ],
+  "1-47-SilphCo_1F": [
+    [
+      1,
+      47
+    ]
+  ],
+  "1-48-SilphCo_2F": [
+    [
+      1,
+      48
+    ]
+  ],
+  "1-49-SilphCo_3F": [
+    [
+      1,
+      49
+    ]
+  ],
+  "1-50-SilphCo_4F": [
+    [
+      1,
+      50
+    ]
+  ],
+  "1-51-SilphCo_5F": [
+    [
+      1,
+      51
+    ]
+  ],
+  "1-52-SilphCo_6F": [
+    [
+      1,
+      52
+    ]
+  ],
+  "1-53-SilphCo_7F": [
+    [
+      1,
+      53
+    ]
+  ],
+  "1-54-SilphCo_8F": [
+    [
+      1,
+      54
+    ]
+  ],
+  "1-55-SilphCo_9F": [
+    [
+      1,
+      55
+    ]
+  ],
+  "1-56-SilphCo_10F": [
+    [
+      1,
+      56
+    ]
+  ],
+  "1-57-SilphCo_11F": [
+    [
+      1,
+      57
+    ]
+  ],
+  "1-58-SilphCo_Elevator": [
+    [
+      1,
+      58
+    ]
+  ],
+  "1-59-PokemonMansion_1F": [
+    [
+      1,
+      59
+    ]
+  ],
+  "1-60-PokemonMansion_2F": [
+    [
+      1,
+      60
+    ]
+  ],
+  "1-61-PokemonMansion_3F": [
+    [
+      1,
+      61
+    ]
+  ],
+  "1-62-PokemonMansion_B1F": [
+    [
+      1,
+      62
+    ]
+  ],
+  "1-63-SafariZone_Center": [
+    [
+      1,
+      63
+    ]
+  ],
+  "1-64-SafariZone_East": [
+    [
+      1,
+      64
+    ]
+  ],
+  "1-65-SafariZone_North": [
+    [
+      1,
+      65
+    ]
+  ],
+  "1-66-SafariZone_West": [
+    [
+      1,
+      66
+    ]
+  ],
+  "1-67-SafariZone_Center_RestHouse": [
+    [
+      1,
+      67
+    ]
+  ],
+  "1-68-SafariZone_East_RestHouse": [
+    [
+      1,
+      68
+    ]
+  ],
+  "1-69-SafariZone_North_RestHouse": [
+    [
+      1,
+      69
+    ]
+  ],
+  "1-70-SafariZone_West_RestHouse": [
+    [
+      1,
+      70
+    ]
+  ],
+  "1-71-SafariZone_SecretHouse": [
+    [
+      1,
+      71
+    ]
+  ],
+  "1-72-CeruleanCave_1F": [
+    [
+      1,
+      72
+    ]
+  ],
+  "1-73-CeruleanCave_2F": [
+    [
+      1,
+      73
+    ]
+  ],
+  "1-74-CeruleanCave_B1F": [
+    [
+      1,
+      74
+    ]
+  ],
+  "1-75-PokemonLeague_LoreleisRoom": [
+    [
+      1,
+      75
+    ]
+  ],
+  "1-76-PokemonLeague_BrunosRoom": [
+    [
+      1,
+      76
+    ]
+  ],
+  "1-77-PokemonLeague_AgathasRoom": [
+    [
+      1,
+      77
+    ]
+  ],
+  "1-78-PokemonLeague_LancesRoom": [
+    [
+      1,
+      78
+    ]
+  ],
+  "1-79-PokemonLeague_ChampionsRoom": [
+    [
+      1,
+      79
+    ]
+  ],
+  "1-80-PokemonLeague_HallOfFame": [
+    [
+      1,
+      80
+    ]
+  ],
+  "1-81-RockTunnel_1F": [
+    [
+      1,
+      81
+    ]
+  ],
+  "1-82-RockTunnel_B1F": [
+    [
+      1,
+      82
+    ]
+  ],
+  "1-83-SeafoamIslands_1F": [
+    [
+      1,
+      83
+    ]
+  ],
+  "1-84-SeafoamIslands_B1F": [
+    [
+      1,
+      84
+    ]
+  ],
+  "1-85-SeafoamIslands_B2F": [
+    [
+      1,
+      85
+    ]
+  ],
+  "1-86-SeafoamIslands_B3F": [
+    [
+      1,
+      86
+    ]
+  ],
+  "1-87-SeafoamIslands_B4F": [
+    [
+      1,
+      87
+    ]
+  ],
+  "1-88-PokemonTower_1F": [
+    [
+      1,
+      88
+    ]
+  ],
+  "1-89-PokemonTower_2F": [
+    [
+      1,
+      89
+    ]
+  ],
+  "1-90-PokemonTower_3F": [
+    [
+      1,
+      90
+    ]
+  ],
+  "1-91-PokemonTower_4F": [
+    [
+      1,
+      91
+    ]
+  ],
+  "1-92-PokemonTower_5F": [
+    [
+      1,
+      92
+    ]
+  ],
+  "1-93-PokemonTower_6F": [
+    [
+      1,
+      93
+    ]
+  ],
+  "1-94-PokemonTower_7F": [
+    [
+      1,
+      94
+    ]
+  ],
+  "1-95-PowerPlant": [
+    [
+      1,
+      95
+    ]
+  ],
+  "3-0-PalletTown": [
+    [
+      3,
+      0
+    ]
+  ],
+  "3-1-ViridianCity": [
+    [
+      3,
+      1
+    ]
+  ],
+  "3-2-PewterCity": [
+    [
+      3,
+      2
+    ]
+  ],
+  "3-3-CeruleanCity": [
+    [
+      3,
+      3
+    ]
+  ],
+  "3-4-LavenderTown": [
+    [
+      3,
+      4
+    ]
+  ],
+  "3-5-VermilionCity": [
+    [
+      3,
+      5
+    ]
+  ],
+  "3-6-CeladonCity": [
+    [
+      3,
+      6
+    ]
+  ],
+  "3-7-FuchsiaCity": [
+    [
+      3,
+      7
+    ]
+  ],
+  "3-8-CinnabarIsland": [
+    [
+      3,
+      8
+    ]
+  ],
+  "3-9-IndigoPlateau_Exterior": [
+    [
+      3,
+      9
+    ]
+  ],
+  "3-10-SaffronCity": [
+    [
+      3,
+      10
+    ]
+  ],
+  "3-11-SaffronCity_Connection": [
+    [
+      3,
+      11
+    ]
+  ],
+  "3-14-Route14": [
+    [
+      3,
+      14
+    ]
+  ],
+  "3-19-Route1": [
+    [
+      3,
+      19
+    ]
+  ],
+  "3-20-Route2": [
+    [
+      3,
+      20
+    ]
+  ],
+  "3-21-Route3": [
+    [
+      3,
+      21
+    ]
+  ],
+  "3-22-Route4": [
+    [
+      3,
+      22
+    ]
+  ],
+  "3-23-Route5": [
+    [
+      3,
+      23
+    ]
+  ],
+  "3-24-Route6": [
+    [
+      3,
+      24
+    ]
+  ],
+  "3-25-Route7": [
+    [
+      3,
+      25
+    ]
+  ],
+  "3-26-Route8": [
+    [
+      3,
+      26
+    ]
+  ],
+  "3-27-Route9": [
+    [
+      3,
+      27
+    ]
+  ],
+  "3-28-Route10": [
+    [
+      3,
+      28
+    ]
+  ],
+  "3-29-Route11": [
+    [
+      3,
+      29
+    ]
+  ],
+  "3-30-Route12": [
+    [
+      3,
+      30
+    ]
+  ],
+  "3-31-Route13": [
+    [
+      3,
+      31
+    ]
+  ],
+  "3-33-Route15": [
+    [
+      3,
+      33
+    ]
+  ],
+  "3-34-Route16": [
+    [
+      3,
+      34
+    ]
+  ],
+  "3-35-Route17": [
+    [
+      3,
+      35
+    ]
+  ],
+  "3-36-Route18": [
+    [
+      3,
+      36
+    ]
+  ],
+  "3-37-Route19": [
+    [
+      3,
+      37
+    ]
+  ],
+  "3-38-Route20": [
+    [
+      3,
+      38
+    ]
+  ],
+  "3-39-Route21_North": [
+    [
+      3,
+      39
+    ]
+  ],
+  "3-40-Route21_South": [
+    [
+      3,
+      40
+    ]
+  ],
+  "3-41-Route22": [
     [
       3,
       41
     ]
   ],
-  "Route02_ViridianForest": [
+  "3-42-Route23": [
     [
-      15,
+      3,
+      42
+    ]
+  ],
+  "3-43-Route24": [
+    [
+      3,
+      43
+    ]
+  ],
+  "3-44-Route25": [
+    [
+      3,
+      44
+    ]
+  ],
+  "4-0-PalletTown_PlayersHouse_1F": [
+    [
+      4,
       0
     ]
   ],
-  "ViridianForest_Route02": [
+  "4-1-PalletTown_PlayersHouse_2F": [
     [
-      15,
+      4,
+      1
+    ]
+  ],
+  "4-2-PalletTown_RivalsHouse": [
+    [
+      4,
+      2
+    ]
+  ],
+  "4-3-PalletTown_ProfessorOaksLab": [
+    [
+      4,
       3
     ]
   ],
-  "PewterCity-Gym": [
+  "5-0-ViridianCity_House": [
+    [
+      5,
+      0
+    ]
+  ],
+  "5-1-ViridianCity_Gym": [
+    [
+      5,
+      1
+    ]
+  ],
+  "5-2-ViridianCity_School": [
+    [
+      5,
+      2
+    ]
+  ],
+  "5-3-ViridianCity_Mart": [
+    [
+      5,
+      3
+    ]
+  ],
+  "5-4-ViridianCity_PokemonCenter_1F": [
+    [
+      5,
+      4
+    ]
+  ],
+  "5-5-ViridianCity_PokemonCenter_2F": [
+    [
+      5,
+      5
+    ]
+  ],
+  "6-0-PewterCity_Museum_1F": [
+    [
+      6,
+      0
+    ]
+  ],
+  "6-1-PewterCity_Museum_2F": [
+    [
+      6,
+      1
+    ]
+  ],
+  "6-2-PewterCity_Gym": [
     [
       6,
       2
+    ]
+  ],
+  "6-3-PewterCity_Mart": [
+    [
+      6,
+      3
+    ]
+  ],
+  "6-4-PewterCity_House1": [
+    [
+      6,
+      4
+    ]
+  ],
+  "6-5-PewterCity_PokemonCenter_1F": [
+    [
+      6,
+      5
+    ]
+  ],
+  "6-6-PewterCity_PokemonCenter_2F": [
+    [
+      6,
+      6
+    ]
+  ],
+  "6-7-PewterCity_House2": [
+    [
+      6,
+      7
     ]
   ]
 }

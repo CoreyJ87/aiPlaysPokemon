@@ -1,551 +1,163 @@
 {
   "maps": {
-    "Celadon_Chief_House_FRLG": {
-      "imageFile": "Celadon_Chief_House_FRLG.png",
-      "widthTiles": 11,
-      "heightTiles": 9,
-      "connections": []
-    },
-    "Player_Bedroom_FRLG": {
-      "imageFile": "Player_Bedroom_FRLG.png",
-      "widthTiles": 12,
-      "heightTiles": 9,
+    "4-0-PalletTown_PlayersHouse_1F": {
+      "imageFile": "4-0-PalletTown_PlayersHouse_1F.png",
+      "widthTiles": 27,
+      "heightTiles": 20,
       "connections": [
         {
           "type": "stairs",
           "fromTile": [
-            10,
-            2
+            17,
+            7
           ],
-          "toMap": "Pallet_Town_Red's_House_FRLG",
+          "toMap": "4-1-PalletTown_PlayersHouse_2F",
           "toTile": [
-            10,
-            2
-          ]
-        }
-      ]
-    },
-    "Pallet_Town_Red's_House_FRLG": {
-      "imageFile": "Pallet_Town_Red's_House_FRLG.png",
-      "widthTiles": 13,
-      "heightTiles": 10,
-      "connections": [
-        {
-          "type": "stairs",
-          "fromTile": [
-            10,
-            2
-          ],
-          "toMap": "Player_Bedroom_FRLG",
-          "toTile": [
-            10,
-            2
+            17,
+            7
           ]
         },
         {
           "type": "door",
           "fromTile": [
-            4,
-            8
+            11,
+            13
           ],
-          "toMap": "PalletTown",
+          "toMap": "3-0-PalletTown",
           "toTile": [
             6,
-            8
+            13
           ]
         }
       ]
     },
-    "CeladonCity": {
-      "imageFile": "CeladonCity.png",
-      "widthTiles": 60,
-      "heightTiles": 40,
-      "connections": []
+    "4-1-PalletTown_PlayersHouse_2F": {
+      "imageFile": "4-1-PalletTown_PlayersHouse_2F.png",
+      "widthTiles": 26,
+      "heightTiles": 19,
+      "connections": [
+        {
+          "type": "door",
+          "fromTile": [
+            17,
+            7
+          ],
+          "toMap": "4-0-PalletTown_PlayersHouse_1F",
+          "toTile": [
+            17,
+            7
+          ]
+        }
+      ]
     },
-    "PalletTown": {
-      "imageFile": "PalletTown.png",
-      "widthTiles": 24,
+    "4-2-PalletTown_RivalsHouse": {
+      "imageFile": "4-2-PalletTown_RivalsHouse.png",
+      "widthTiles": 27,
       "heightTiles": 20,
       "connections": [
         {
           "type": "door",
           "fromTile": [
-            15,
-            7
+            11,
+            13
           ],
-          "toMap": "Rival's_house_map_FRLG",
+          "toMap": "3-0-PalletTown",
           "toTile": [
-            10,
-            2
+            15,
+            13
           ]
-        },
+        }
+      ]
+    },
+    "4-3-PalletTown_ProfessorOaksLab": {
+      "imageFile": "4-3-PalletTown_ProfessorOaksLab.png",
+      "widthTiles": 27,
+      "heightTiles": 24,
+      "connections": [
         {
           "type": "door",
           "fromTile": [
-            16,
-            13
+            13,
+            17
           ],
-          "toMap": "PalletTown-ProfessorOak'sLab",
+          "toMap": "3-0-PalletTown",
           "toTile": [
-            10,
-            2
+            16,
+            19
           ]
-        },
+        }
+      ]
+    },
+    "3-0-PalletTown": {
+      "imageFile": "3-0-PalletTown.png",
+      "widthTiles": 24,
+      "heightTiles": 30,
+      "connections": [
         {
           "type": "edge",
           "fromTile": [
             12,
-            0
-          ],
-          "toMap": "Route01",
-          "toTile": [
-            10,
             2
+          ],
+          "toMap": "3-19-Route1",
+          "toTile": [
+            12,
+            37
           ],
           "direction": "north",
           "width": 2
         },
-        {
-          "type": "door",
-          "fromTile": [
-            6,
-            7
-          ],
-          "toMap": "Pallet_Town_Red's_House_FRLG",
-          "toTile": [
-            4,
-            8
-          ]
-        },
-        {
-          "type": "edge",
-          "fromTile": [
-            8,
-            19
-          ],
-          "toMap": "Route21",
-          "toTile": [
-            8,
-            0
-          ],
-          "direction": "south",
-          "width": 2
-        }
-      ]
-    },
-    "PalletTown-ProfessorOak'sLab": {
-      "imageFile": "PalletTown-ProfessorOak'sLab.jpg",
-      "widthTiles": 22,
-      "heightTiles": 26,
-      "connections": [
         {
           "type": "door",
           "fromTile": [
             6,
             12
           ],
-          "toMap": "PalletTown",
+          "toMap": "4-0-PalletTown_PlayersHouse_1F",
           "toTile": [
+            11,
+            13
+          ]
+        },
+        {
+          "type": "door",
+          "fromTile": [
+            15,
+            12
+          ],
+          "toMap": "4-2-PalletTown_RivalsHouse",
+          "toTile": [
+            11,
+            13
+          ]
+        },
+        {
+          "type": "door",
+          "fromTile": [
             16,
-            14
-          ]
-        }
-      ]
-    },
-    "Route01": {
-      "imageFile": "Route01.png",
-      "widthTiles": 24,
-      "heightTiles": 40,
-      "connections": [
-        {
-          "type": "edge",
-          "fromTile": [
-            10,
-            0
-          ],
-          "toMap": "ViridianCity",
-          "toTile": [
-            22,
-            39
-          ],
-          "direction": "north",
-          "width": 4
-        },
-        {
-          "type": "edge",
-          "fromTile": [
-            12,
-            39
-          ],
-          "toMap": "PalletTown",
-          "toTile": [
-            12,
-            0
-          ],
-          "direction": "south",
-          "width": 2
-        }
-      ]
-    },
-    "PewterCity-Gym": {
-      "imageFile": "PewterCity-Gym.png",
-      "widthTiles": 12,
-      "heightTiles": 16,
-      "connections": [
-        {
-          "type": "door",
-          "fromTile": [
-            5,
-            14
-          ],
-          "toMap": "PewterCity",
-          "toTile": [
-            15,
-            17
-          ]
-        }
-      ]
-    },
-    "Poke_Mart_interior_FRLG": {
-      "imageFile": "Poke_Mart_interior_FRLG.png",
-      "widthTiles": 11,
-      "heightTiles": 9,
-      "connections": []
-    },
-    "Route22": {
-      "imageFile": "Route22.png",
-      "widthTiles": 51,
-      "heightTiles": 24,
-      "connections": [
-        {
-          "type": "edge",
-          "fromTile": [
-            50,
-            6
-          ],
-          "toMap": "ViridianCity",
-          "toTile": [
-            0,
-            16
-          ],
-          "direction": "east",
-          "width": 4
-        }
-      ]
-    },
-    "Route02": {
-      "imageFile": "Route02.png",
-      "widthTiles": 24,
-      "heightTiles": 80,
-      "connections": [
-        {
-          "type": "edge",
-          "fromTile": [
-            7,
-            79
-          ],
-          "toMap": "ViridianCity",
-          "toTile": [
-            19,
-            0
-          ],
-          "direction": "south",
-          "width": 5
-        },
-        {
-          "type": "edge",
-          "fromTile": [
-            8,
-            0
-          ],
-          "toMap": "PewterCity",
-          "toTile": [
-            20,
-            39
-          ],
-          "direction": "north",
-          "width": 4
-        },
-        {
-          "type": "door",
-          "fromTile": [
-            5,
-            51
-          ],
-          "toMap": "Route02_ViridianForest",
-          "toTile": [
-            7,
-            10
-          ]
-        },
-        {
-          "type": "door",
-          "fromTile": [
-            5,
-            13
-          ],
-          "toMap": "ViridianForest_Route02",
-          "toTile": [
-            7,
-            2
-          ]
-        }
-      ]
-    },
-    "ViridianCity": {
-      "imageFile": "ViridianCity.png",
-      "widthTiles": 48,
-      "heightTiles": 40,
-      "connections": [
-        {
-          "type": "edge",
-          "fromTile": [
-            0,
-            16
-          ],
-          "toMap": "Route22",
-          "toTile": [
-            50,
-            6
-          ],
-          "direction": "west",
-          "width": 4
-        },
-        {
-          "type": "edge",
-          "fromTile": [
-            22,
-            39
-          ],
-          "toMap": "Route01",
-          "toTile": [
-            10,
-            0
-          ],
-          "direction": "south",
-          "width": 4
-        },
-        {
-          "type": "door",
-          "fromTile": [
-            26,
-            26
-          ],
-          "toMap": "Pokemon_Center_inside_FRLG",
-          "toTile": [
-            7,
-            8
-          ]
-        },
-        {
-          "type": "door",
-          "fromTile": [
-            36,
-            19
-          ],
-          "toMap": "Poke_Mart_interior_FRLG",
-          "toTile": [
-            4,
-            7
-          ]
-        },
-        {
-          "type": "door",
-          "fromTile": [
-            36,
-            10
-          ],
-          "toMap": "ViridianCity-Gym",
-          "toTile": [
-            17,
-            22
-          ]
-        },
-        {
-          "type": "edge",
-          "fromTile": [
-            19,
-            0
-          ],
-          "toMap": "Route02",
-          "toTile": [
-            7,
-            79
-          ],
-          "direction": "north",
-          "width": 5
-        }
-      ]
-    },
-    "ViridianForest": {
-      "imageFile": "ViridianForest.png",
-      "widthTiles": 54,
-      "heightTiles": 69,
-      "connections": [
-        {
-          "type": "door",
-          "fromTile": [
-            5,
-            9
-          ],
-          "toMap": "ViridianForest_Route02",
-          "toTile": [
-            7,
-            10
-          ]
-        },
-        {
-          "type": "door",
-          "fromTile": [
-            29,
-            62
-          ],
-          "toMap": "Route02_ViridianForest",
-          "toTile": [
-            7,
-            2
-          ]
-        }
-      ]
-    },
-    "Route02_ViridianForest": {
-      "imageFile": "Route02_ViridianForest.png",
-      "widthTiles": 15,
-      "heightTiles": 12,
-      "connections": [
-        {
-          "type": "door",
-          "fromTile": [
-            7,
-            1
-          ],
-          "toMap": "ViridianForest",
-          "toTile": [
-            29,
-            62
-          ]
-        },
-        {
-          "type": "door",
-          "fromTile": [
-            7,
-            10
-          ],
-          "toMap": "Route02",
-          "toTile": [
-            5,
-            51
-          ]
-        }
-      ]
-    },
-    "ViridianForest_Route02": {
-      "imageFile": "ViridianForest_Route02.png",
-      "widthTiles": 15,
-      "heightTiles": 12,
-      "connections": [
-        {
-          "type": "door",
-          "fromTile": [
-            7,
-            1
-          ],
-          "toMap": "Route02",
-          "toTile": [
-            5,
-            13
-          ]
-        },
-        {
-          "type": "door",
-          "fromTile": [
-            7,
-            10
-          ],
-          "toMap": "ViridianForest",
-          "toTile": [
-            5,
-            10
-          ]
-        }
-      ]
-    },
-    "PewterCity": {
-      "imageFile": "PewterCity.png",
-      "widthTiles": 48,
-      "heightTiles": 40,
-      "connections": [
-        {
-          "type": "edge",
-          "fromTile": [
-            20,
-            39
-          ],
-          "toMap": "Route02",
-          "toTile": [
-            8,
-            0
-          ],
-          "direction": "south",
-          "width": 4
-        },
-        {
-          "type": "door",
-          "fromTile": [
-            15,
-            16
-          ],
-          "toMap": "PewterCity-Gym",
-          "toTile": [
-            5,
-            14
-          ]
-        },
-        {
-          "type": "door",
-          "fromTile": [
-            17,
-            25
-          ],
-          "toMap": "Pokemon_Center_inside_FRLG",
-          "toTile": [
-            7,
-            8
-          ]
-        },
-        {
-          "type": "door",
-          "fromTile": [
-            28,
             18
           ],
-          "toMap": "Poke_Mart_interior_FRLG",
+          "toMap": "4-3-PalletTown_ProfessorOaksLab",
           "toTile": [
-            4,
-            7
+            13,
+            17
           ]
         },
         {
           "type": "edge",
           "fromTile": [
-            47,
-            20
+            7,
+            25
           ],
-          "toMap": "Route03",
+          "toMap": "3-39-Route21_North",
           "toTile": [
-            0,
-            9
+            7,
+            0
           ],
-          "direction": "east",
-          "width": 3
+          "direction": "south",
+          "width": 4
         }
       ]
-    },
-    "VermilionCity": {
-      "imageFile": "VermilionCity.png",
-      "widthTiles": 48,
-      "heightTiles": 40,
-      "connections": []
     }
   },
   "landmarks": {},

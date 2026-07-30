@@ -186,7 +186,7 @@ class MapIdMapper:
             print(f"Unknown map {mapName!r} - no image in maps/.")
             return None
 
-        offset = [x - imageCol, y - imageRow]
+        offset = [imageCol - x, imageRow - y]
         data = {}
         if os.path.exists(MAP_OFFSETS_PATH):
             with open(MAP_OFFSETS_PATH, 'r') as f:
@@ -197,10 +197,12 @@ class MapIdMapper:
             json.dump(data, f, indent=2)
 
         print(f"{mapName}: RAM ({x},{y}) is image tile ({imageCol},{imageRow})")
-        print(f"  offset {offset}"
+        print(f"  offset {offset}  (imageTile = ram + offset)"
               + (f"  (was {previous})" if previous else "  [new]"))
-        if offset == [0, 0]:
-            print("  No correction needed - RAM indexes this image directly.")
+        default = list(self.tracker.BORDER_OFFSET)
+        if offset == default:
+            print(f"  Matches the standard border offset {default} - this entry "
+                  f"is redundant but harmless.")
         return offset
 
     def watch(self, interval=3.0):

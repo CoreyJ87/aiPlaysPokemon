@@ -25,9 +25,28 @@ class LocationTracker:
 
     SCREEN_WIDTH = 240
     SCREEN_HEIGHT = 160
-    PLAYER_OFFSET_X = SCREEN_WIDTH // 2
-    PLAYER_OFFSET_Y = SCREEN_HEIGHT // 2
     TILE_SIZE = 16
+
+    # Where the player sprite sits on screen: the centre tile of the 15x10 the
+    # GBA shows, i.e. half the screen in each axis.
+    PLAYER_TILE_X = SCREEN_WIDTH // 2 // TILE_SIZE    # 7
+    PLAYER_TILE_Y = SCREEN_HEIGHT // 2 // TILE_SIZE   # 5
+    PLAYER_OFFSET_X = PLAYER_TILE_X * TILE_SIZE       # 112
+    PLAYER_OFFSET_Y = PLAYER_TILE_Y * TILE_SIZE       # 80
+
+    # The decompiled-ROM rips in maps/ are rendered *with* the in-game border,
+    # padded on every side by the half-screen the camera needs to keep drawing
+    # when the player stands at a map edge. So a map's own (0,0) sits at image
+    # tile (7, 5), and because RAM coordinates are map-relative, every RAM
+    # position needs this added to index the image.
+    #
+    # Both the padding and the player's screen position are the same half-screen
+    # measurement, which is why one constant feeds both. Verified against the
+    # rips (interiors measure exactly 7 columns of border on the right and 5 rows
+    # on the bottom) and against collision: in the player's bedroom, RAM (7,4)
+    # has to resolve to (14,9), because from (14,9) a step left is the TV at
+    # (13,9) while from (14,8) it is open floor.
+    BORDER_OFFSET = (PLAYER_TILE_X, PLAYER_TILE_Y)
 
     # If the best neighbor match is below this, fall back to a full scan.
     CONFIDENCE_THRESHOLD = 0.90
@@ -240,7 +259,11 @@ class LocationTracker:
         }
 
     def _loadMapOffsets(self, connectionDataDir):
-        """Load per-map RAM->image tile corrections (see mapOffsets.json)."""
+        """Load per-map RAM->image tile overrides: imageTile = ram + (dx, dy).
+
+        Optional; maps with no entry use BORDER_OFFSET, which is right for every
+        rip rendered with the standard camera border.
+        """
         path = os.path.join(connectionDataDir, 'mapOffsets.json')
         if not os.path.exists(path):
             return
@@ -300,10 +323,10 @@ class LocationTracker:
     def _tileFromState(self, gameState, mapName=None):
         """Player's (col, row) on the map image, from RAM, or None.
 
-        SaveBlock1's x/y are map-local tile coordinates on the same grid the map
-        images use, so this is normally the image tile outright (and
-        _checkRamAgreement polices that claim as you play). Rips cropped tighter
-        than the real map need a correction, which mapOffsets.json supplies.
+        SaveBlock1's x/y are map-local, while the images include the border the
+        map is rendered with, so BORDER_OFFSET converts between them.
+        mapOffsets.json overrides that per map for any rip framed differently,
+        and _checkRamAgreement polices the result as you play.
         """
         if not gameState:
             return None
@@ -311,8 +334,8 @@ class LocationTracker:
         x, y = player.get('x'), player.get('y')
         if x is None or y is None:
             return None
-        dx, dy = self.mapOffsets.get(mapName, (0, 0))
-        return (x - dx, y - dy)
+        dx, dy = self.mapOffsets.get(mapName, self.BORDER_OFFSET)
+        return (x + dx, y + dy)
 
     def _checkRamAgreement(self, mapName, best, ramTile):
         """Warn when a confident template match disagrees with RAM coordinates.

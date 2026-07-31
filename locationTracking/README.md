@@ -1,22 +1,29 @@
 # Location Tracking in Pokemon
 
-To figure out where the player character is in the game, we use template matching
-to take advantage of how each map is just a collection of tile objects. This works
-better for 2D maps than 3D ones, since in the early games we never have to worry
-about the map being rotated.
+This is a set of tools and data sets to help automatically identify where the player character is in Pokemon Fire Red and Leaf Green.  
+
+Originally the goal of this toolset was to try and mimic as much as possible how a human would identify where they were when playing the game.  This is why there are so many map screenshots, because a very quick version of this is to take a screenshot of the game and use tile matching to figure out where the player character is on the map.  Additionally, because of how unique each overworld map is, this also lets you figure out what map you are on in addition to where you are on it.  
+
+However, tile matching by itself quickly runs into problems.  While the overwold sections of the game are all fairly unique in layout, many of the interriors of buildings all use the exact same map, only changing in NPC layout.  However, since most NPCs move around when in frame, it's very hard to add them to the map and use them as landmarks or identifiers.  As such, we fall back on pulling the game state from the emulator and reading which map we are on from that.  
+
+Both tile matching and reading the game state gives us a map ID and relative location.  Using that info, we then figure out what we are nearby and what things we can get to within [the pathfinder](./pathfinder.py).  The pathing is based on the tile data we grabbed when labeling each tile of each map as walkable or not, and other special charactistics it might have had.  
 
 ## Pipeline
 
+```mermaid
+flowchart TD;
+  locationTracker-->|map and position|navigator
+  pathFinder-->|route|navigator
+  navigator-->|route requests|pathFinder
+  navigator-->|button taps|emulator
+  emulator-->screenshot
+  emulator-->game_state
+  screenshot-->locationTracker
+  game_state-->locationTracker
+
 ```
-   screenshot ─┐
-               ├─> locationTracker ─> (map, tile) ─> pathfinder ─> plan ─┐
- GAME_STATE  ──┘    (template match,                  (semantic A*)       │
-                     instance disambig)                                   v
-                                                          navigator (verify + replan loop)
-                                                                 │  taps buttons via mGBA
-                                                                 v
-                                                            the emulator
-```
+
+If it seems confusing, it's because it is.  As the goal of the project grew from just playing the first part of the game, to beating the entire thing, navigation went from just walking from Pallet Town to Pewter City to have to handle spaces blocked via HM moves, switches, items, etc.  
 
 ## Tools
 
@@ -57,7 +64,8 @@ keys remain `"row,col"` for backward compatibility with existing data.
 
 ## Resources
 
-The maps for every location in the game are in the [maps folder](./maps/). These
-were taken from [vgmaps.com](https://www.vgmaps.com/atlas/GBA/index.htm), which
-was a huge help. They have maps for tons of different games, so if you want to do
-something similar for another franchise, check them out.
+The maps for every location in the game are in the [maps folder](./maps/). 
+
+The inspriration for this project came from looking at all the map data on [vgmaps.com](https://www.vgmaps.com/atlas/GBA/index.htm), which was a huge help. They have maps for tons of different games, so if you want to do something similar for another franchise, check them out.
+
+I did eventually have to move from using their maps to grabing the map data directly from a decompiled version of fire red and leaf green hosted by [pret](https://github.com/pret/pokefirered).  This was very helpful for the indoor maps, because it let me grab the ingame background and borders too, which allowed all of the reference maps to be larger than the ingame screenshots.  

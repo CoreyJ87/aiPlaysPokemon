@@ -94,20 +94,6 @@
       "heightTiles": 30,
       "connections": [
         {
-          "type": "edge",
-          "fromTile": [
-            12,
-            2
-          ],
-          "toMap": "3-19-Route1",
-          "toTile": [
-            12,
-            37
-          ],
-          "direction": "north",
-          "width": 2
-        },
-        {
           "type": "door",
           "fromTile": [
             6,
@@ -155,6 +141,55 @@
             0
           ],
           "direction": "south",
+          "width": 4
+        },
+        {
+          "type": "edge",
+          "fromTile": [
+            12,
+            4
+          ],
+          "toMap": "3-19-Route1",
+          "toTile": [
+            12,
+            37
+          ],
+          "direction": "north",
+          "width": 2
+        }
+      ]
+    },
+    "3-19-Route1": {
+      "imageFile": "3-19-Route1.png",
+      "widthTiles": 24,
+      "heightTiles": 40,
+      "connections": [
+        {
+          "type": "edge",
+          "fromTile": [
+            12,
+            39
+          ],
+          "toMap": "3-0-PalletTown",
+          "toTile": [
+            12,
+            5
+          ],
+          "direction": "south",
+          "width": 2
+        },
+        {
+          "type": "edge",
+          "fromTile": [
+            10,
+            0
+          ],
+          "toMap": "3-1-ViridianCity",
+          "toTile": [
+            22,
+            39
+          ],
+          "direction": "north",
           "width": 4
         }
       ]

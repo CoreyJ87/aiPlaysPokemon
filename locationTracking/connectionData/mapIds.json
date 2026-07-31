@@ -940,5 +940,29 @@
       6,
       7
     ]
+  ],
+  "15-0-Route2_ViridianForest_SouthEntrance": [
+    [
+      15,
+      0
+    ]
+  ],
+  "15-1-Route2_House": [
+    [
+      15,
+      1
+    ]
+  ],
+  "15-2-Route2_EastBuilding": [
+    [
+      15,
+      2
+    ]
+  ],
+  "15-3-Route2_ViridianForest_NorthEntrance": [
+    [
+      15,
+      3
+    ]
   ]
 }

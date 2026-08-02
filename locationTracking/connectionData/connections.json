@@ -193,6 +193,688 @@
           "width": 4
         }
       ]
+    },
+    "3-1-ViridianCity": {
+      "imageFile": "3-1-ViridianCity.png",
+      "widthTiles": 48,
+      "heightTiles": 40,
+      "connections": [
+        {
+          "type": "edge",
+          "fromTile": [
+            22,
+            39
+          ],
+          "toMap": "3-19-Route1",
+          "toTile": [
+            10,
+            0
+          ],
+          "direction": "south",
+          "width": 4
+        },
+        {
+          "type": "door",
+          "fromTile": [
+            26,
+            26
+          ],
+          "toMap": "5-4-ViridianCity_PokemonCenter_1F",
+          "toTile": [
+            14,
+            13
+          ]
+        },
+        {
+          "type": "door",
+          "fromTile": [
+            36,
+            19
+          ],
+          "toMap": "5-3-ViridianCity_Mart",
+          "toTile": [
+            11,
+            12
+          ]
+        },
+        {
+          "type": "door",
+          "fromTile": [
+            36,
+            10
+          ],
+          "toMap": "5-1-ViridianCity_Gym",
+          "toTile": [
+            24,
+            27
+          ]
+        },
+        {
+          "type": "door",
+          "fromTile": [
+            25,
+            18
+          ],
+          "toMap": "5-2-ViridianCity_School",
+          "toTile": [
+            11,
+            12
+          ]
+        },
+        {
+          "type": "door",
+          "fromTile": [
+            25,
+            11
+          ],
+          "toMap": "5-0-ViridianCity_House",
+          "toTile": [
+            11,
+            12
+          ]
+        },
+        {
+          "type": "edge",
+          "fromTile": [
+            19,
+            0
+          ],
+          "toMap": "3-20-Route2",
+          "toTile": [
+            7,
+            79
+          ],
+          "direction": "north",
+          "width": 5
+        },
+        {
+          "type": "edge",
+          "fromTile": [
+            0,
+            16
+          ],
+          "toMap": "3-41-Route22",
+          "toTile": [
+            47,
+            6
+          ],
+          "direction": "west",
+          "width": 4
+        }
+      ]
+    },
+    "5-0-ViridianCity_House": {
+      "imageFile": "5-0-ViridianCity_House.png",
+      "widthTiles": 25,
+      "heightTiles": 19,
+      "connections": [
+        {
+          "type": "door",
+          "fromTile": [
+            11,
+            12
+          ],
+          "toMap": "3-1-ViridianCity",
+          "toTile": [
+            25,
+            12
+          ]
+        }
+      ]
+    },
+    "5-1-ViridianCity_Gym": {
+      "imageFile": "5-1-ViridianCity_Gym.png",
+      "widthTiles": 34,
+      "heightTiles": 34,
+      "connections": [
+        {
+          "type": "door",
+          "fromTile": [
+            24,
+            27
+          ],
+          "toMap": "3-1-ViridianCity",
+          "toTile": [
+            36,
+            11
+          ]
+        }
+      ]
+    },
+    "5-2-ViridianCity_School": {
+      "imageFile": "5-2-ViridianCity_School.png",
+      "widthTiles": 24,
+      "heightTiles": 19,
+      "connections": [
+        {
+          "type": "door",
+          "fromTile": [
+            11,
+            12
+          ],
+          "toMap": "3-1-ViridianCity",
+          "toTile": [
+            25,
+            19
+          ]
+        }
+      ]
+    },
+    "5-3-ViridianCity_Mart": {
+      "imageFile": "5-3-ViridianCity_Mart.png",
+      "widthTiles": 25,
+      "heightTiles": 19,
+      "connections": [
+        {
+          "type": "door",
+          "fromTile": [
+            11,
+            12
+          ],
+          "toMap": "3-1-ViridianCity",
+          "toTile": [
+            36,
+            20
+          ]
+        }
+      ]
+    },
+    "5-4-ViridianCity_PokemonCenter_1F": {
+      "imageFile": "5-4-ViridianCity_PokemonCenter_1F.png",
+      "widthTiles": 29,
+      "heightTiles": 20,
+      "connections": [
+        {
+          "type": "door",
+          "fromTile": [
+            14,
+            13
+          ],
+          "toMap": "3-1-ViridianCity",
+          "toTile": [
+            26,
+            27
+          ]
+        },
+        {
+          "type": "door",
+          "fromTile": [
+            8,
+            11
+          ],
+          "toMap": "5-5-ViridianCity_PokemonCenter_2F",
+          "toTile": [
+            9,
+            11
+          ]
+        }
+      ]
+    },
+    "5-5-ViridianCity_PokemonCenter_2F": {
+      "imageFile": "5-5-ViridianCity_PokemonCenter_2F.png",
+      "widthTiles": 29,
+      "heightTiles": 20,
+      "connections": [
+        {
+          "type": "door",
+          "fromTile": [
+            8,
+            11
+          ],
+          "toMap": "5-4-ViridianCity_PokemonCenter_1F",
+          "toTile": [
+            9,
+            11
+          ]
+        }
+      ]
+    },
+    "3-20-Route2": {
+      "imageFile": "3-20-Route2.png",
+      "widthTiles": 24,
+      "heightTiles": 80,
+      "connections": [
+        {
+          "type": "edge",
+          "fromTile": [
+            7,
+            79
+          ],
+          "toMap": "3-1-ViridianCity",
+          "toTile": [
+            19,
+            0
+          ],
+          "direction": "south",
+          "width": 5
+        },
+        {
+          "type": "door",
+          "fromTile": [
+            6,
+            51
+          ],
+          "toMap": "15-0-Route2_ViridianForest_SouthEntrance",
+          "toTile": [
+            14,
+            15
+          ]
+        },
+        {
+          "type": "door",
+          "fromTile": [
+            5,
+            14
+          ],
+          "toMap": "15-3-Route2_ViridianForest_NorthEntrance",
+          "toTile": [
+            14,
+            7
+          ]
+        },
+        {
+          "type": "edge",
+          "fromTile": [
+            8,
+            0
+          ],
+          "toMap": "3-2-PewterCity",
+          "toTile": [
+            20,
+            39
+          ],
+          "direction": "north",
+          "width": 4
+        }
+      ]
+    },
+    "15-0-Route2_ViridianForest_SouthEntrance": {
+      "imageFile": "15-0-Route2_ViridianForest_SouthEntrance.png",
+      "widthTiles": 29,
+      "heightTiles": 22,
+      "connections": [
+        {
+          "type": "door",
+          "fromTile": [
+            14,
+            6
+          ],
+          "toMap": "1-0-ViridianForest",
+          "toTile": [
+            36,
+            67
+          ]
+        },
+        {
+          "type": "door",
+          "fromTile": [
+            14,
+            15
+          ],
+          "toMap": "3-20-Route2",
+          "toTile": [
+            6,
+            52
+          ]
+        }
+      ]
+    },
+    "15-3-Route2_ViridianForest_NorthEntrance": {
+      "imageFile": "15-3-Route2_ViridianForest_NorthEntrance.png",
+      "widthTiles": 29,
+      "heightTiles": 22,
+      "connections": [
+        {
+          "type": "door",
+          "fromTile": [
+            14,
+            6
+          ],
+          "toMap": "3-20-Route2",
+          "toTile": [
+            5,
+            13
+          ]
+        },
+        {
+          "type": "door",
+          "fromTile": [
+            14,
+            15
+          ],
+          "toMap": "1-0-ViridianForest",
+          "toTile": [
+            12,
+            15
+          ]
+        }
+      ]
+    },
+    "1-0-ViridianForest": {
+      "imageFile": "1-0-ViridianForest.png",
+      "widthTiles": 68,
+      "heightTiles": 79,
+      "connections": [
+        {
+          "type": "door",
+          "fromTile": [
+            12,
+            14
+          ],
+          "toMap": "15-3-Route2_ViridianForest_NorthEntrance",
+          "toTile": [
+            14,
+            15
+          ]
+        }
+      ]
+    },
+    "3-2-PewterCity": {
+      "imageFile": "3-2-PewterCity.png",
+      "widthTiles": 48,
+      "heightTiles": 40,
+      "connections": [
+        {
+          "type": "edge",
+          "fromTile": [
+            20,
+            39
+          ],
+          "toMap": "3-20-Route2",
+          "toTile": [
+            8,
+            0
+          ],
+          "direction": "south",
+          "width": 4
+        },
+        {
+          "type": "edge",
+          "fromTile": [
+            47,
+            20
+          ],
+          "toMap": "3-21-Route3",
+          "toTile": [
+            0,
+            9
+          ],
+          "direction": "east",
+          "width": 4
+        },
+        {
+          "type": "door",
+          "fromTile": [
+            9,
+            30
+          ],
+          "toMap": "6-7-PewterCity_House2",
+          "toTile": [
+            11,
+            12
+          ]
+        },
+        {
+          "type": "door",
+          "fromTile": [
+            17,
+            25
+          ],
+          "toMap": "6-5-PewterCity_PokemonCenter_1F",
+          "toTile": [
+            14,
+            13
+          ]
+        },
+        {
+          "type": "door",
+          "fromTile": [
+            28,
+            18
+          ],
+          "toMap": "6-3-PewterCity_Mart",
+          "toTile": [
+            11,
+            12
+          ]
+        },
+        {
+          "type": "door",
+          "fromTile": [
+            33,
+            11
+          ],
+          "toMap": "6-4-PewterCity_House1",
+          "toTile": [
+            11,
+            12
+          ]
+        },
+        {
+          "type": "door",
+          "fromTile": [
+            17,
+            6
+          ],
+          "toMap": "6-0-PewterCity_Museum_1F",
+          "toTile": [
+            21,
+            14
+          ]
+        },
+        {
+          "type": "door",
+          "fromTile": [
+            25,
+            4
+          ],
+          "toMap": "6-0-PewterCity_Museum_1F",
+          "toTile": [
+            28,
+            14
+          ]
+        },
+        {
+          "type": "door",
+          "fromTile": [
+            15,
+            16
+          ],
+          "toMap": "6-2-PewterCity_Gym",
+          "toTile": [
+            13,
+            19
+          ]
+        }
+      ]
+    },
+    "6-0-PewterCity_Museum_1F": {
+      "imageFile": "6-0-PewterCity_Museum_1F.png",
+      "widthTiles": 42,
+      "heightTiles": 21,
+      "connections": [
+        {
+          "type": "door",
+          "fromTile": [
+            21,
+            14
+          ],
+          "toMap": "3-2-PewterCity",
+          "toTile": [
+            17,
+            7
+          ]
+        },
+        {
+          "type": "door",
+          "fromTile": [
+            28,
+            14
+          ],
+          "toMap": "3-2-PewterCity",
+          "toTile": [
+            25,
+            5
+          ]
+        },
+        {
+          "type": "door",
+          "fromTile": [
+            16,
+            13
+          ],
+          "toMap": "6-1-PewterCity_Museum_2F",
+          "toTile": [
+            18,
+            13
+          ]
+        }
+      ]
+    },
+    "6-1-PewterCity_Museum_2F": {
+      "imageFile": "6-1-PewterCity_Museum_2F.png",
+      "widthTiles": 33,
+      "heightTiles": 20,
+      "connections": [
+        {
+          "type": "door",
+          "fromTile": [
+            17,
+            13
+          ],
+          "toMap": "6-0-PewterCity_Museum_1F",
+          "toTile": [
+            15,
+            13
+          ]
+        }
+      ]
+    },
+    "6-2-PewterCity_Gym": {
+      "imageFile": "6-2-PewterCity_Gym.png",
+      "widthTiles": 27,
+      "heightTiles": 26,
+      "connections": [
+        {
+          "type": "door",
+          "fromTile": [
+            13,
+            19
+          ],
+          "toMap": "3-2-PewterCity",
+          "toTile": [
+            15,
+            17
+          ]
+        }
+      ]
+    },
+    "6-3-PewterCity_Mart": {
+      "imageFile": "6-3-PewterCity_Mart.png",
+      "widthTiles": 25,
+      "heightTiles": 19,
+      "connections": [
+        {
+          "type": "door",
+          "fromTile": [
+            11,
+            12
+          ],
+          "toMap": "3-2-PewterCity",
+          "toTile": [
+            28,
+            19
+          ]
+        }
+      ]
+    },
+    "6-4-PewterCity_House1": {
+      "imageFile": "6-4-PewterCity_House1.png",
+      "widthTiles": 25,
+      "heightTiles": 19,
+      "connections": [
+        {
+          "type": "door",
+          "fromTile": [
+            11,
+            12
+          ],
+          "toMap": "3-2-PewterCity",
+          "toTile": [
+            33,
+            12
+          ]
+        }
+      ]
+    },
+    "6-5-PewterCity_PokemonCenter_1F": {
+      "imageFile": "6-5-PewterCity_PokemonCenter_1F.png",
+      "widthTiles": 29,
+      "heightTiles": 20,
+      "connections": [
+        {
+          "type": "door",
+          "fromTile": [
+            14,
+            13
+          ],
+          "toMap": "3-2-PewterCity",
+          "toTile": [
+            17,
+            26
+          ]
+        },
+        {
+          "type": "door",
+          "fromTile": [
+            8,
+            11
+          ],
+          "toMap": "6-6-PewterCity_PokemonCenter_2F",
+          "toTile": [
+            9,
+            11
+          ]
+        }
+      ]
+    },
+    "6-7-PewterCity_House2": {
+      "imageFile": "6-7-PewterCity_House2.png",
+      "widthTiles": 25,
+      "heightTiles": 19,
+      "connections": [
+        {
+          "type": "door",
+          "fromTile": [
+            11,
+            12
+          ],
+          "toMap": "3-2-PewterCity",
+          "toTile": [
+            9,
+            31
+          ]
+        }
+      ]
+    },
+    "6-6-PewterCity_PokemonCenter_2F": {
+      "imageFile": "6-6-PewterCity_PokemonCenter_2F.png",
+      "widthTiles": 29,
+      "heightTiles": 20,
+      "connections": [
+        {
+          "type": "door",
+          "fromTile": [
+            8,
+            11
+          ],
+          "toMap": "6-5-PewterCity_PokemonCenter_1F",
+          "toTile": [
+            9,
+            11
+          ]
+        }
+      ]
     }
   },
   "landmarks": {},

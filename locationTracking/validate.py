@@ -8,12 +8,12 @@ problems that would make navigation fail or behave oddly for the LLM player:
     * connection toMap points at a map with no image/tile data
     * connection references an instance id missing from the registry
     * an instance's template has no '@return' exit (its callers can't get back)
-    * grass patch references a tile that isn't classified as tall_grass
+    * an encounter override entry is missing a species or has a bad level range
 
   WARNINGS (incomplete data):
     * map has tile data but no connections at all (possible dead end)
     * high percentage of unclassified (unknown) tiles
-    * grass patch with no encounters
+    * map has a wild-encounter table but no tiles that can trigger it
     * persistent object with no category
 
 Usage:
@@ -24,7 +24,8 @@ import json
 import os
 import sys
 
-GRASS_TYPE = 3
+from pathfinder import ENCOUNTER_TERRAIN, encounterTilesFor
+
 OBJECT_TYPE = 14
 UNKNOWN_TYPE = 0
 RETURN_TARGET = "@return"
@@ -34,6 +35,7 @@ UNKNOWN_WARN_PCT = 25  # warn if more than this fraction of tiles are unclassifi
 def _load(baseDir):
     tileDir = os.path.join(baseDir, 'tileData')
     connPath = os.path.join(baseDir, 'connectionData', 'connections.json')
+    romPath = os.path.join(baseDir, 'encounterData', 'romEncounters.json')
     tiles = {}
     for f in os.listdir(tileDir):
         if f.endswith('.json'):
@@ -44,14 +46,31 @@ def _load(baseDir):
     if os.path.exists(connPath):
         with open(connPath, 'r') as fp:
             conns = json.load(fp)
-    return tiles, conns
+    rom = {}
+    if os.path.exists(romPath):
+        with open(romPath, 'r') as fp:
+            rom = json.load(fp)
+    return tiles, conns, rom
+
+
+def _encounterTable(mapName, data, rom):
+    """A map's effective encounter table: its own override, else the ROM dump."""
+    if data.get('encounters') is not None:
+        return data['encounters'], 'override'
+    parts = mapName.split('-', 2)
+    if len(parts) == 3 and parts[0].isdigit() and parts[1].isdigit():
+        key = f'{int(parts[0])},{int(parts[1])}'
+        if key in rom:
+            return rom[key], f'ROM {key}'
+    return [], 'none'
 
 
 def validate(baseDir=None):
     """Return {'errors': [...], 'warnings': [...], 'stats': {...}}."""
     baseDir = baseDir or os.path.dirname(__file__)
-    tiles, conns = _load(baseDir)
+    tiles, conns, rom = _load(baseDir)
     errors, warnings = [], []
+    mapsNeedingPaint = []
 
     knownMaps = set(tiles.keys()) | set(conns.get('maps', {}).keys())
     instances = conns.get('instances', {})
@@ -100,27 +119,36 @@ def validate(baseDir=None):
             if key not in cats:
                 warnings.append(f"{mapName}: object at {key} has no category")
 
-        # grass patches
-        for patch in d.get('grassPatches', []):
-            pid = patch.get('id', '?')
-            if not patch.get('encounters'):
-                warnings.append(f"{mapName}/{pid}: grass patch has no encounters")
-            for (col, row) in patch.get('tiles', []):
-                if not (0 <= row < len(grid) and 0 <= col < len(grid[0])):
-                    errors.append(f"{mapName}/{pid}: tile ({col},{row}) out of bounds")
-                elif grid[row][col] != GRASS_TYPE:
-                    errors.append(f"{mapName}/{pid}: tile ({col},{row}) is not "
-                                  f"tall_grass (type {grid[row][col]})")
+        # Wild encounters. The table belongs to the map (the game keys it by
+        # map_bank/map_number); the grid only decides where it can be triggered.
+        table, source = _encounterTable(mapName, d, rom)
+        if source == 'override':
+            for i, e in enumerate(table):
+                if not e.get('species'):
+                    errors.append(f"{mapName}: encounter override [{i}] has no species")
+                lo, hi = e.get('levelMin'), e.get('levelMax')
+                if lo is not None and hi is not None and lo > hi:
+                    errors.append(f"{mapName}: encounter override [{i}] has "
+                                  f"levelMin {lo} > levelMax {hi}")
+        for method in {e.get('method', 'grass') for e in table}:
+            if method not in ENCOUNTER_TERRAIN:
+                continue   # fishing / rock smash aren't routable yet
+            if not encounterTilesFor(grid, d['widthTiles'], d['heightTiles'], method):
+                mapsNeedingPaint.append(f"{mapName} ({method})")
+                warnings.append(f"{mapName}: has {method} encounters but no tile "
+                                f"can trigger them - paint its walkable floor")
 
     stats = {
         "maps_with_tile_data": len(tiles),
         "maps_with_connections": len(mapsWithConns),
         "landmarks": len(conns.get('landmarks', {})),
         "instances": len(instances),
+        "maps_needing_paint": len(mapsNeedingPaint),
         "errors": len(errors),
         "warnings": len(warnings),
     }
-    return {"errors": errors, "warnings": warnings, "stats": stats}
+    return {"errors": errors, "warnings": warnings, "stats": stats,
+            "needsPaint": sorted(mapsNeedingPaint)}
 
 
 def main():
@@ -132,6 +160,16 @@ def main():
     print(f"\nERRORS: {len(report['errors'])}")
     for e in report["errors"]:
         print(f"  [E] {e}")
+
+    # Its own section rather than 30 lines lost among the warnings: this is a
+    # worklist, and every entry on it is a species that can't be caught yet.
+    if report["needsPaint"]:
+        print(f"\nMAPS NEEDING PAINT: {len(report['needsPaint'])}")
+        print("  (wild encounters with no tile that can trigger them - paint "
+              "their\n   walkable floor in mapEditor.py Encounters mode)")
+        for m in report["needsPaint"]:
+            print(f"  [P] {m}")
+
     print(f"\nWARNINGS: {len(report['warnings'])}")
     for w in report["warnings"][:50]:
         print(f"  [W] {w}")

@@ -18,10 +18,13 @@ three modes, all operating on the currently loaded map:
                  (Pokemon Center, Mart) carry an instance id, and the shared
                  interior's exit uses the dynamic target "@return".
 
-    Grass        Group tall-grass tiles into named patches and attach a wild
-                 encounter list (species + level range + rate + method).  An
-                 "Import from ROM" button can prefill encounters via
-                 encounterExtractor.py.
+    Encounters   Review the map's wild-encounter table and see exactly which
+                 tiles the navigator will treat as encounter terrain.  Nothing
+                 here is painted: the game keys its encounter tables by
+                 map_bank/map_number, so the table belongs to the *map* and is
+                 read from encounterData/romEncounters.json, while the tiles are
+                 derived from what you painted in Tiles mode.  The panel is a
+                 review surface plus an override for maps the ROM dump misses.
 
 Usage:
     python mapEditor.py                       # file picker
@@ -30,14 +33,14 @@ Usage:
 
 Coordinate conventions (read this before touching the data!):
     * The tile grid is stored row-major: tiles[row][col].
-    * All coordinate *points* are [col, row] — connection fromTile/toTile and
-      grassPatch tile lists.  This matches pathfinder.py's (col, row) tuples.
+    * All coordinate *points* are [col, row] — connection fromTile/toTile.
+      This matches pathfinder.py's (col, row) tuples.
     * Legacy exception kept for backward compatibility: the items / objects /
       objectCategories dicts are keyed "row,col" (matching the JSON already on
       disk).  Do not change this without migrating tileData/*.json.
 
 Outputs:
-    tileData/<mapName>.json       per-map tiles, items, objects, grass patches
+    tileData/<mapName>.json       per-map tiles, items, objects, encounters
     connectionData/connections.json   global connections, landmarks, instances
 """
 
@@ -47,6 +50,10 @@ from PIL import Image, ImageTk, ImageDraw
 import json
 import os
 import sys
+
+# Encounter terrain is derived from the painted grid, not stored. Share the
+# pathfinder's implementation so the editor shows exactly what it will compute.
+from pathfinder import ENCOUNTER_TERRAIN, encounterTilesFor
 
 
 TILE_SIZE = 16
@@ -71,7 +78,6 @@ TILE_TYPES = {
 }
 ITEM_TYPE = 13
 OBJECT_TYPE = 14
-GRASS_TYPE = 3
 
 # Object categories. "landmark" is a named place you walk *onto* (routing treats
 # it as walkable, the rest are approached + interacted with). This replaces the
@@ -379,8 +385,9 @@ class MapEditor:
         os.makedirs(self.tileDataDir, exist_ok=True)
         os.makedirs(self.connDir, exist_ok=True)
 
-        # ROM-dumped wild encounters, keyed "bank,number" (used to populate the
-        # grass patch-label dropdown).
+        # ROM-dumped wild encounters, keyed "bank,number". This is the primary
+        # source for a map's encounter table - map images are named
+        # "bank-number-Name", so the lookup needs no per-map bookkeeping.
         self.romEncounters = {}
         self._loadRomEncounters()
 
@@ -401,7 +408,8 @@ class MapEditor:
         self.items = {}             # "row,col" -> item name
         self.objects = {}           # "row,col" -> object name
         self.objectCategories = {}  # "row,col" -> category
-        self.grassPatches = []      # [{id, label, tiles:[[col,row]], encounters:[...]}]
+        # Manual encounter table, saved only when it differs from the ROM dump.
+        self.encounterOverride = None   # None = use ROM, or [{species, ...}]
 
         # Editing state
         self.mode = "tiles"
@@ -418,10 +426,9 @@ class MapEditor:
         self.connFromTile = None   # (col, row) on current map
         self.connToTile = None     # (col, row) on target map
 
-        # grass mode state
-        self.activePatchIdx = None
-        self._grassDragging = False
-        self._grassDragAdd = True   # whether a drag adds (vs removes) tiles
+        # encounters mode state: derived tiles, recomputed on entry and after
+        # any paint, cached only so the overlay doesn't rebuild them per frame.
+        self.encounterTiles = {}    # method -> [(col, row)]
 
         # batch mode
         self.batchFiles = []
@@ -501,7 +508,7 @@ class MapEditor:
         # Mode toggle
         self.modeVar = tk.StringVar(value="tiles")
         for label, val in [("Tiles", "tiles"), ("Connections", "connections"),
-                           ("Grass", "grass")]:
+                           ("Encounters", "encounters")]:
             tk.Radiobutton(toolbar, text=label, variable=self.modeVar, value=val,
                            command=lambda v=val: self._setMode(v), bg='#2b2b2b',
                            fg='white', selectcolor='#555', indicatoron=False,
@@ -520,7 +527,7 @@ class MapEditor:
         self.sidebar.pack_propagate(False)
         self._buildTilesPanel()
         self._buildConnPanel()
-        self._buildGrassPanel()
+        self._buildEncounterPanel()
 
         self.mapCanvas = MapCanvas(
             main, onTileClick=self._onCanvasClick, onTileDrag=self._onCanvasDrag,
@@ -659,43 +666,29 @@ class MapEditor:
                  bg='#333', fg='#888', font=('monospace', 7), justify='left'
                  ).pack(pady=(10, 2), anchor='w', padx=5)
 
-    def _buildGrassPanel(self):
+    def _buildEncounterPanel(self):
         p = tk.Frame(self.sidebar, bg='#333')
-        self.grassPanel = p
-        tk.Label(p, text="Grass Patches", bg='#333', fg='white',
-                 font=('monospace', 11, 'bold')).pack(pady=(10, 4))
+        self.encPanel = p
+        tk.Label(p, text="Wild Encounters", bg='#333', fg='white',
+                 font=('monospace', 11, 'bold')).pack(pady=(10, 2))
 
-        self.patchListbox = tk.Listbox(p, bg='#2a2a2a', fg='white', height=5,
-                                       selectbackground='#505050', font=('monospace', 8))
-        self.patchListbox.pack(fill=tk.X, padx=5)
-        self.patchListbox.bind('<<ListboxSelect>>', self._onPatchSelect)
+        # Where this map's table came from, and how many tiles can trigger it.
+        # The second number is the one that matters while painting: a table with
+        # no tiles means the navigator can't catch anything here yet.
+        self.encSourceLabel = tk.Label(p, text="", bg='#333', fg='#aaa',
+                                       font=('monospace', 7), justify='left')
+        self.encSourceLabel.pack(anchor='w', padx=5)
 
-        bf = tk.Frame(p, bg='#333')
-        bf.pack(fill=tk.X, padx=5, pady=4)
-        tk.Button(bf, text="New Patch", command=self._newPatch, bg='#206020', fg='white',
-                  relief=tk.FLAT, font=('monospace', 8)).pack(side=tk.LEFT, padx=2)
-        tk.Button(bf, text="Delete", command=self._deletePatch, bg='#802020', fg='white',
-                  relief=tk.FLAT, font=('monospace', 8)).pack(side=tk.LEFT, padx=2)
-
-        tk.Label(p, text="(click grass tiles to toggle membership)", bg='#333', fg='#aaa',
-                 font=('monospace', 7)).pack()
-
-        tk.Label(p, text="Patch label:", bg='#333', fg='white',
-                 font=('monospace', 9)).pack(anchor='w', padx=5, pady=(8, 0))
-        self.patchLabelVar = tk.StringVar()
-        # Editable combobox: choose a ROM encounter key ("bank,number") or type a
-        # custom label. Values come from encounterData/romEncounters.json.
-        pe = ttk.Combobox(p, textvariable=self.patchLabelVar, width=22,
-                          values=sorted(self.romEncounters.keys()))
-        pe.pack(padx=5)
-        pe.bind('<FocusOut>', lambda e: self._applyPatchLabel())
-        pe.bind('<<ComboboxSelected>>', lambda e: self._onPatchLabelSelected())
-
-        tk.Label(p, text="Encounters", bg='#333', fg='white',
-                 font=('monospace', 9, 'bold')).pack(pady=(10, 2))
-        self.encListbox = tk.Listbox(p, bg='#2a2a2a', fg='white', height=6,
+        self.encListbox = tk.Listbox(p, bg='#2a2a2a', fg='white', height=9,
                                      selectbackground='#505050', font=('monospace', 8))
-        self.encListbox.pack(fill=tk.X, padx=5)
+        self.encListbox.pack(fill=tk.X, padx=5, pady=(4, 2))
+
+        self.encTileLabel = tk.Label(p, text="", bg='#333', fg='#aaa',
+                                     font=('monospace', 7), justify='left')
+        self.encTileLabel.pack(anchor='w', padx=5, pady=(2, 6))
+
+        tk.Label(p, text="Override (only if the ROM table is wrong)", bg='#333',
+                 fg='white', font=('monospace', 8, 'bold')).pack(anchor='w', padx=5)
 
         ef = tk.Frame(p, bg='#333')
         ef.pack(fill=tk.X, padx=5, pady=2)
@@ -718,30 +711,49 @@ class MapEditor:
         tk.Entry(ef, textvariable=self.encRateVar, width=5).grid(row=2, column=1, sticky='w')
         tk.Label(ef, text="Method", bg='#333', fg='white',
                  font=('monospace', 8)).grid(row=3, column=0, sticky='w')
+        # Only the methods the navigator can actually route to are offered;
+        # fishing and rock smash need an item/interaction it doesn't model.
         ttk.Combobox(ef, textvariable=self.encMethodVar,
-                     values=["grass", "water", "old_rod", "good_rod", "super_rod", "cave"],
+                     values=sorted(ENCOUNTER_TERRAIN.keys()),
                      width=9, state='readonly').grid(row=3, column=1, sticky='w')
 
         gf = tk.Frame(p, bg='#333')
         gf.pack(fill=tk.X, padx=5, pady=2)
         tk.Button(gf, text="Add", command=self._addEncounter, bg='#206020', fg='white',
                   relief=tk.FLAT, font=('monospace', 8)).pack(side=tk.LEFT, padx=2)
-        tk.Button(gf, text="Remove", command=self._removeEncounter, bg='#802020', fg='white',
-                  relief=tk.FLAT, font=('monospace', 8)).pack(side=tk.LEFT, padx=2)
-        tk.Button(gf, text="Import from ROM", command=self._importFromRom, bg='#404040',
+        tk.Button(gf, text="Remove", command=self._removeEncounter, bg='#802020',
                   fg='white', relief=tk.FLAT, font=('monospace', 8)).pack(side=tk.LEFT, padx=2)
+
+        hf = tk.Frame(p, bg='#333')
+        hf.pack(fill=tk.X, padx=5, pady=2)
+        tk.Button(hf, text="Copy ROM table", command=self._copyRomToOverride,
+                  bg='#404040', fg='white', relief=tk.FLAT,
+                  font=('monospace', 8)).pack(side=tk.LEFT, padx=2)
+        tk.Button(hf, text="Drop override", command=self._dropOverride, bg='#404040',
+                  fg='white', relief=tk.FLAT, font=('monospace', 8)).pack(side=tk.LEFT, padx=2)
+
+        tk.Label(p, text="Encounter tiles are derived from the painted grid,\n"
+                         "not marked here: tall_grass if the map has any, else\n"
+                         "plain walkable floor (that's how caves work). Tiles\n"
+                         "with no reachable neighbour of the same kind are\n"
+                         "excluded — a reroll has to be able to step off and\n"
+                         "back on again.",
+                 bg='#333', fg='#888', font=('monospace', 7), justify='left'
+                 ).pack(pady=(10, 2), anchor='w', padx=5)
 
     def _setMode(self, mode):
         self.mode = mode
         self.modeVar.set(mode)
-        for panel in (self.tilesPanel, self.connPanel, self.grassPanel):
+        for panel in (self.tilesPanel, self.connPanel, self.encPanel):
             panel.pack_forget()
         {"tiles": self.tilesPanel, "connections": self.connPanel,
-         "grass": self.grassPanel}[mode].pack(fill=tk.BOTH, expand=True)
+         "encounters": self.encPanel}[mode].pack(fill=tk.BOTH, expand=True)
         if mode == "connections":
             self._refreshConnList()
-        elif mode == "grass":
-            self._refreshPatchList()
+        elif mode == "encounters":
+            # Recompute on entry: the grid may have been repainted since the
+            # last visit, and the derived tiles are a function of that grid.
+            self._refreshEncounters()
         self._renderCanvas()
         self.statusBar.config(text=f"Mode: {mode}")
 
@@ -796,13 +808,14 @@ class MapEditor:
             self.items = d.get('items', {})
             self.objects = d.get('objects', {})
             self.objectCategories = d.get('objectCategories', {})
-            self.grassPatches = d.get('grassPatches', [])
+            self.encounterOverride = d.get('encounters')
             if (len(self.tileGrid) != self.heightTiles or
                     (self.tileGrid and len(self.tileGrid[0]) != self.widthTiles)):
                 self.tileGrid = [[0] * self.widthTiles for _ in range(self.heightTiles)]
         else:
             self.tileGrid = [[0] * self.widthTiles for _ in range(self.heightTiles)]
-            self.items, self.objects, self.objectCategories, self.grassPatches = {}, {}, {}, []
+            self.items, self.objects, self.objectCategories = {}, {}, {}
+            self.encounterOverride = None
 
         # ensure a connections.json entry exists for this map
         if self.mapName not in self.connData["maps"]:
@@ -816,14 +829,14 @@ class MapEditor:
         self.currentStroke = []
         self.hasUnsavedTiles = False
         self.connFromTile = None
-        self.activePatchIdx = None
+        self.encounterTiles = {}
 
         self.mapVar.set(self.mapName)
         self.mapLabel.config(text=f"{self.mapName}  ({self.widthTiles}x{self.heightTiles})")
         self.mapCanvas.setImage(img, self.widthTiles, self.heightTiles)
         self.root.after(30, self.mapCanvas.render)
         self._refreshConnList()
-        self._refreshPatchList()
+        self._refreshEncounters()
         self._updateStats()
 
     # ── overlay rendering ───────────────────────────────────────────────────
@@ -845,8 +858,8 @@ class MapEditor:
             self._drawLandmarks(draw)
             if self.connFromTile:
                 self._outline(draw, self.connFromTile, (255, 255, 0, 255))
-        elif self.mode == "grass":
-            self._drawPatches(draw)
+        elif self.mode == "encounters":
+            self._drawEncounterTiles(draw)
 
     def _outline(self, draw, tile, color, width=2):
         c, r = tile
@@ -876,16 +889,17 @@ class MapEditor:
             if lm.get("map") == self.mapName:
                 self._fillTile(draw, lm.get("tile", [0, 0]), (255, 215, 0, 160))
 
-    def _drawPatches(self, draw):
-        palette = [(255, 0, 0, 130), (0, 0, 255, 130), (255, 0, 255, 130),
-                   (255, 165, 0, 130), (0, 255, 255, 130), (255, 255, 0, 130)]
-        for i, patch in enumerate(self.grassPatches):
-            color = palette[i % len(palette)]
-            for tile in patch.get("tiles", []):
+    def _drawEncounterTiles(self, draw):
+        """Highlight the tiles the navigator will pace on to force an encounter.
+
+        This is the whole point of the mode: if a map has a table but nothing
+        lights up, its floor still needs painting.
+        """
+        colors = {"grass": (255, 255, 0, 120), "water": (0, 200, 255, 120)}
+        for method, tiles in self.encounterTiles.items():
+            color = colors.get(method, (255, 0, 255, 120))
+            for tile in tiles:
                 self._fillTile(draw, tile, color)
-            if i == self.activePatchIdx:
-                for tile in patch.get("tiles", []):
-                    self._outline(draw, tile, (255, 255, 255, 255), 1)
 
     def _fillTile(self, draw, tile, color):
         c, r = tile
@@ -902,8 +916,21 @@ class MapEditor:
             self.connFromTile = (col, row)
             self.fromLabel.config(text=f"({col}, {row})")
             self._renderCanvas()
-        elif self.mode == "grass":
-            self._grassClick(col, row)
+        elif self.mode == "encounters":
+            self._encounterClick(col, row)
+
+    def _encounterClick(self, col, row):
+        """Encounter tiles are derived, not painted - a click just explains one."""
+        methods = [m for m, tiles in self.encounterTiles.items()
+                   if (col, row) in set(tiles)]
+        if methods:
+            self.statusBar.config(
+                text=f"({col}, {row}) triggers {'/'.join(sorted(methods))} "
+                     f"encounters here.")
+        else:
+            self.statusBar.config(
+                text=f"({col}, {row}) is not encounter terrain. Paint it in "
+                     f"Tiles mode (walkable floor or tall_grass/water).")
 
     def _onCanvasDrag(self, col, row):
         if col is None:
@@ -911,8 +938,6 @@ class MapEditor:
         if self.mode == "tiles" and self.isDragging:
             if self._paintBrush(col, row, self.currentType):
                 self._renderCanvas()
-        elif self.mode == "grass" and self._grassDragging:
-            self._grassApply(col, row)
 
     def _onCanvasRightDown(self, col, row):
         if self.mode == "tiles" and col is not None:
@@ -938,9 +963,6 @@ class MapEditor:
             self._updateStats()
         self.isDragging = False
         self._erasing = False
-        if self.mode == "grass" and self._grassDragging:
-            self._grassDragging = False
-            self._refreshPatchList()  # update the "(N tiles)" count
 
     def _onCanvasHover(self, col, row):
         if col is None:
@@ -1227,123 +1249,104 @@ class MapEditor:
             self.connFromTile = (ft[0], ft[1])
             self._renderCanvas()
 
-    # ── grass mode ───────────────────────────────────────────────────────────
-    def _newPatch(self):
-        existing = {p["id"] for p in self.grassPatches}
-        i = 1
-        while f"patch{i}" in existing:
-            i += 1
-        self.grassPatches.append({"id": f"patch{i}", "label": f"patch{i}",
-                                  "tiles": [], "encounters": []})
-        self.activePatchIdx = len(self.grassPatches) - 1
-        self.hasUnsavedTiles = True
-        self._refreshPatchList()
-        self._renderCanvas()
+    # ── encounters mode ──────────────────────────────────────────────────────
+    def _romKeyForMap(self):
+        """The "bank,number" key for the current map, from its name.
 
-    def _deletePatch(self):
-        if self.activePatchIdx is None:
-            return
-        self.grassPatches.pop(self.activePatchIdx)
-        self.activePatchIdx = None
-        self.hasUnsavedTiles = True
-        self._refreshPatchList()
-        self._renderCanvas()
+        Map files are named "bank-number-Name", which is the same key the game
+        uses for its encounter tables - so no per-map bookkeeping is needed.
+        """
+        if not self.mapName:
+            return None
+        parts = self.mapName.split('-', 2)
+        if len(parts) == 3 and parts[0].isdigit() and parts[1].isdigit():
+            return f'{int(parts[0])},{int(parts[1])}'
+        return None
 
-    def _grassClick(self, col, row):
-        """Press: begin a drag. The first tile decides whether the drag adds or
-        removes patch membership, so click-and-hold paints (or erases) a run of
-        grass tiles instead of toggling each one."""
-        if self.activePatchIdx is None:
-            messagebox.showinfo("No patch", "Create or select a patch first.")
-            return
-        tiles = self.grassPatches[self.activePatchIdx]["tiles"]
-        self._grassDragAdd = [col, row] not in tiles
-        self._grassDragging = True
-        self._grassApply(col, row)
+    def _encounterTable(self):
+        """This map's effective table, and where it came from."""
+        if self.encounterOverride is not None:
+            return self.encounterOverride, "override"
+        key = self._romKeyForMap()
+        if key and key in self.romEncounters:
+            return self.romEncounters[key], f"ROM {key}"
+        return [], "none"
 
-    def _grassApply(self, col, row):
-        """Add or remove a single tile from the active patch (drag-safe)."""
-        if col is None or row is None or self.activePatchIdx is None:
+    def _refreshEncounters(self):
+        """Recompute the derived tiles and redraw the whole panel."""
+        if not hasattr(self, 'encListbox'):
             return
-        if self.tileGrid[row][col] != GRASS_TYPE:
-            self.statusBar.config(text="That tile is not tall_grass (paint it first in Tiles).")
-            return
-        tiles = self.grassPatches[self.activePatchIdx]["tiles"]
-        point = [col, row]
-        if self._grassDragAdd and point not in tiles:
-            tiles.append(point)
-        elif not self._grassDragAdd and point in tiles:
-            tiles.remove(point)
-        else:
-            return  # no change for this tile
-        self.hasUnsavedTiles = True
-        self._renderCanvas()
+        table, source = self._encounterTable()
 
-    def _refreshPatchList(self):
-        if not hasattr(self, 'patchListbox'):
-            return
-        self.patchListbox.delete(0, tk.END)
-        for p in self.grassPatches:
-            self.patchListbox.insert(
-                tk.END, f"{p['label']} ({len(p['tiles'])} tiles, {len(p['encounters'])} enc)")
-        self._refreshEncList()
-
-    def _onPatchSelect(self, event):
-        sel = self.patchListbox.curselection()
-        if not sel:
-            return
-        self.activePatchIdx = sel[0]
-        self.patchLabelVar.set(self.grassPatches[sel[0]].get("label", ""))
-        self._refreshEncList()
-        self._renderCanvas()
-
-    def _applyPatchLabel(self):
-        if self.activePatchIdx is not None:
-            self.grassPatches[self.activePatchIdx]["label"] = self.patchLabelVar.get().strip()
-            self.hasUnsavedTiles = True
-            self._refreshPatchList()
-
-    def _onPatchLabelSelected(self):
-        """A value was picked from the patch-label dropdown. Apply it as the label
-        and, if it matches a ROM encounter key, offer to fill in its encounters."""
-        if self.activePatchIdx is None:
-            return
-        self._applyPatchLabel()
-        label = self.patchLabelVar.get().strip()
-        encs = self.romEncounters.get(label)
-        if not encs:
-            return
-        patch = self.grassPatches[self.activePatchIdx]
-        if patch["encounters"] and not messagebox.askyesno(
-                "Replace encounters",
-                f"Replace this patch's {len(patch['encounters'])} encounter(s) "
-                f"with the {len(encs)} from ROM key '{label}'?"):
-            return
-        # Deep-copy so later edits don't mutate the shared ROM table.
-        patch["encounters"] = [dict(e) for e in encs]
-        self.hasUnsavedTiles = True
-        self._refreshEncList()
-        self._refreshPatchList()
-        self.statusBar.config(text=f"Loaded {len(encs)} encounters from ROM key '{label}'")
-
-    def _refreshEncList(self):
         self.encListbox.delete(0, tk.END)
-        if self.activePatchIdx is None:
-            return
-        for e in self.grassPatches[self.activePatchIdx]["encounters"]:
+        for e in table:
             self.encListbox.insert(
                 tk.END, f"{e['species']} Lv{e.get('levelMin','?')}-{e.get('levelMax','?')}"
                         f" {e.get('rate',0)}% {e.get('method','grass')}")
+        if not table:
+            self.encListbox.insert(tk.END, "(no wild encounters on this map)")
+
+        self.encounterTiles = {}
+        if self.tileGrid:
+            for method in {e.get('method', 'grass') for e in table}:
+                if method not in ENCOUNTER_TERRAIN:
+                    continue
+                tiles = encounterTilesFor(self.tileGrid, self.widthTiles,
+                                          self.heightTiles, method)
+                if tiles:
+                    self.encounterTiles[method] = tiles
+
+        self.encSourceLabel.config(text=f"table: {source}  ({len(table)} entries)")
+
+        supported = {e.get('method', 'grass') for e in table} & set(ENCOUNTER_TERRAIN)
+        if not supported:
+            note = ("no routable methods here\n"
+                    "(fishing / rock smash aren't\n modelled yet)") if table else ""
+        else:
+            lines = []
+            for method in sorted(supported):
+                count = len(self.encounterTiles.get(method, ()))
+                flag = "" if count else "   <- paint this map!"
+                lines.append(f"{method}: {count} tiles{flag}")
+            note = "\n".join(lines)
+        self.encTileLabel.config(text=note)
+        self._renderCanvas()
+
+    def _copyRomToOverride(self):
+        """Start an override from the ROM table, so it can be edited by hand."""
+        key = self._romKeyForMap()
+        encs = self.romEncounters.get(key or '', [])
+        if not encs:
+            messagebox.showinfo("Nothing to copy",
+                                f"No ROM encounter table for {self.mapName} "
+                                f"(key {key!r}).")
+            return
+        if self.encounterOverride and not messagebox.askyesno(
+                "Replace override",
+                f"Replace the current {len(self.encounterOverride)}-entry "
+                f"override with the {len(encs)} from ROM key '{key}'?"):
+            return
+        # Deep-copy so later edits don't mutate the shared ROM table.
+        self.encounterOverride = [dict(e) for e in encs]
+        self.hasUnsavedTiles = True
+        self._refreshEncounters()
+        self.statusBar.config(text=f"Override seeded from ROM key '{key}'")
+
+    def _dropOverride(self):
+        """Go back to the ROM table for this map."""
+        if self.encounterOverride is None:
+            return
+        self.encounterOverride = None
+        self.hasUnsavedTiles = True
+        self._refreshEncounters()
+        self.statusBar.config(text="Override dropped; using the ROM table.")
 
     def _addEncounter(self):
-        if self.activePatchIdx is None:
-            messagebox.showinfo("No patch", "Select a patch first.")
-            return
         species = self.encSpeciesVar.get().strip()
         if not species:
             return
         try:
-            enc = {"species": species,
+            enc = {"species": species.upper(),
                    "levelMin": int(self.encLvlMinVar.get() or 0),
                    "levelMax": int(self.encLvlMaxVar.get() or 0),
                    "rate": int(self.encRateVar.get() or 0),
@@ -1351,47 +1354,30 @@ class MapEditor:
         except ValueError:
             messagebox.showwarning("Bad value", "Levels and rate must be numbers.")
             return
-        self.grassPatches[self.activePatchIdx]["encounters"].append(enc)
+        # Editing implies overriding; seed from the ROM table so an addition
+        # extends it rather than silently replacing it with one species.
+        if self.encounterOverride is None:
+            table, _source = self._encounterTable()
+            self.encounterOverride = [dict(e) for e in table]
+        self.encounterOverride.append(enc)
         self.hasUnsavedTiles = True
         self.encSpeciesVar.set("")
-        self._refreshEncList()
-        self._refreshPatchList()
+        self._refreshEncounters()
 
     def _removeEncounter(self):
-        if self.activePatchIdx is None:
-            return
         sel = self.encListbox.curselection()
         if not sel:
             return
-        self.grassPatches[self.activePatchIdx]["encounters"].pop(sel[0])
+        if self.encounterOverride is None:
+            table, _source = self._encounterTable()
+            if not table:
+                return
+            self.encounterOverride = [dict(e) for e in table]
+        if sel[0] >= len(self.encounterOverride):
+            return
+        self.encounterOverride.pop(sel[0])
         self.hasUnsavedTiles = True
-        self._refreshEncList()
-        self._refreshPatchList()
-
-    def _importFromRom(self):
-        if self.activePatchIdx is None:
-            messagebox.showinfo("No patch", "Select a patch to import encounters into.")
-            return
-        try:
-            import encounterExtractor
-        except ImportError:
-            messagebox.showinfo(
-                "Not available",
-                "encounterExtractor.py not found. Run it standalone to dump encounter\n"
-                "tables, then add species here, or implement live ROM import.")
-            return
-        try:
-            encs = encounterExtractor.encountersForMap(self.mapName)
-        except Exception as exc:  # noqa: BLE001 - surface any extractor error to the user
-            messagebox.showerror("Import failed", str(exc))
-            return
-        if not encs:
-            messagebox.showinfo("Nothing found", f"No encounters found for {self.mapName}.")
-            return
-        self.grassPatches[self.activePatchIdx]["encounters"].extend(encs)
-        self.hasUnsavedTiles = True
-        self._refreshEncList()
-        self._refreshPatchList()
+        self._refreshEncounters()
 
     # ── batch ────────────────────────────────────────────────────────────────
     def _nextMap(self):
@@ -1423,8 +1409,11 @@ class MapEditor:
                 "items": self.items,
                 "objects": self.objects,
                 "objectCategories": self.objectCategories,
-                "grassPatches": self.grassPatches,
             }
+            # Only written when it exists: absent means "use the ROM table",
+            # which is what almost every map should say.
+            if self.encounterOverride is not None:
+                data["encounters"] = self.encounterOverride
             with open(os.path.join(self.tileDataDir, f'{self.mapName}.json'), 'w') as f:
                 json.dump(data, f, separators=(',', ':'))
         with open(os.path.join(self.connDir, 'connections.json'), 'w') as f:

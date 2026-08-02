@@ -29,12 +29,12 @@ If it seems confusing, it's because it is.  As the goal of the project grew from
 
 | File | What it does |
 | --- | --- |
-| `mapEditor.py` | **The one editor.** Tile classification, map connections (with a click-to-pick Target Picker so you never type coordinates), item/object tagging (objects get a category), and grass-patch encounter tagging — all in one window with mode toggles. Replaces the old `tileClassifier.py` + `connectionEditor.py`. |
+| `mapEditor.py` | **The one editor.** Tile classification, map connections (with a click-to-pick Target Picker so you never type coordinates), item/object tagging (objects get a category), and a wild-encounter review panel — all in one window with mode toggles. Replaces the old `tileClassifier.py` + `connectionEditor.py`. |
 | `locationTracker.py` | Template-matches a screenshot to a map + tile. Searches the current map and its connection neighbors first (fast), full-scans only on low confidence. Uses `GAME_STATE`'s `map_bank`/`map_number` to disambiguate shared interiors. |
-| `pathfinder.py` | Multi-map A* plus semantic routing: `planToLandmark`, `planToObjectCategory` (nearest Pokemon Center, ...), `planToItem`, `planToCatch` (nearest grass with a species). Handles object *approach* (stand adjacent + face), HM/badge-gated obstacles, and `@return` exits via a warp stack. |
-| `navigator.py` | The LLM-facing closed loop: `goTo` / `goHeal` / `goCatch` / `collect`. Takes one step, re-observes, and replans on drift; reports battles/dialog as interruptions. |
-| `encounterExtractor.py` | Optional: reads wild-encounter tables straight from the ROM to prefill grass patches (the editor's "Import from ROM"). Also dumps `encounterData/romEncounters.json` keyed by `(bank,number)`. |
-| `validate.py` | Reports dataset problems: dangling connections, missing instances, unclassified tiles, grass patches without encounters, objects without a category. |
+| `pathfinder.py` | Multi-map A* plus semantic routing: `planToLandmark`, `planToObjectCategory` (nearest Pokemon Center, ...), `planToItem`, `planToCatch` (nearest tile where a species can be met). Handles object *approach* (stand adjacent + face), HM/badge-gated obstacles, and `@return` exits via a warp stack. |
+| `navigator.py` | The LLM-facing closed loop: `goTo` / `goHeal` / `goCatch` / `collect`. Takes one step, re-observes, and replans on drift; reports battles/dialog as interruptions. `goCatch` also paces the encounter terrain once it arrives. |
+| `encounterExtractor.py` | Reads wild-encounter tables straight from the ROM into `encounterData/romEncounters.json`, keyed by `(bank,number)`. This is the primary source of encounter data — the pathfinder reads it directly. |
+| `validate.py` | Reports dataset problems: dangling connections, missing instances, unclassified tiles, maps whose encounters have no tile to trigger them, objects without a category. |
 | `autoClassifier.py` | First-pass automatic tile classification by color/heuristics; refine in `mapEditor.py`. |
 
 ### Editor usage
@@ -45,14 +45,40 @@ python mapEditor.py maps/PalletTown.png   # one map
 python mapEditor.py --batch maps          # iterate the whole folder (n / p to page)
 ```
 
-Modes (toolbar): **Tiles**, **Connections**, **Grass**. `Ctrl+S` saves both the
-per-map tile JSON and `connectionData/connections.json`.
+Modes (toolbar): **Tiles**, **Connections**, **Encounters**. `Ctrl+S` saves both
+the per-map tile JSON and `connectionData/connections.json`.
+
+## Wild encounters
+
+The game keys its encounter tables by `map_bank`/`map_number`, so a table belongs
+to a **map**, not to a patch of grass. Map files are named `bank-number-Name`, so
+a map's table is looked up in `encounterData/romEncounters.json` with no per-map
+tagging at all — there is nothing to mark in the editor.
+
+Where on the map an encounter can fire is derived from the painted grid:
+
+* **grass** — the map's `tall_grass` tiles if it has any, otherwise its plain
+  `walkable` floor. That second branch is what makes caves work: cave floor is
+  "grass" to the encounter tables but is never painted as such.
+* **water** — the map's `water` tiles (needs `surf`).
+* Tiles with no mutually reachable neighbour of the same kind are dropped. A
+  reroll steps back and forth, so a lone tile is useless — and requiring the
+  partner to be encounter terrain too keeps a reroll beside a ledge from hopping
+  down it.
+
+`fishing` and `rocksmash` are not routable yet (they need an item/interaction the
+navigator doesn't model); species reachable only that way are still indexed so
+`planToCatch` can say why it can't get them.
+
+Because the tiles are derived, an unpainted map yields none — run `validate.py`
+for the list of maps still needing paint. Set `encounters` in a map's tileData
+JSON to override the ROM table (the editor's Encounters panel writes it).
 
 ## Data formats
 
 * `tileData/<mapName>.json` — `tiles[row][col]` type grid, plus `items` /
-  `objects` / `objectCategories` (keyed `"row,col"`, legacy) and `grassPatches`
-  (each with `[col,row]` tile lists and an `encounters` list).
+  `objects` / `objectCategories` (keyed `"row,col"`, legacy) and an optional
+  `encounters` override list.
 * `connectionData/connections.json` — per-map `connections`, global `landmarks`,
   and an `instances` registry. A door/warp into a shared interior carries an
   `instance` id; the interior's exit uses the dynamic target `@return`, resolved

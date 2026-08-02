@@ -55,6 +55,14 @@ HM_CAPABILITIES = {
 # Consecutive blocked steps before we stop rather than burn the step budget.
 BLOCKED_LIMIT = 4
 
+# Steps to pace across encounter terrain before giving up on a wild appearing.
+# Gen 3 rolls for an encounter when a step *completes onto* an encounter tile -
+# turning in place does not roll - so rerolling means actually walking, back and
+# forth between two tiles. Encounter rate on a normal route is high enough that
+# a few dozen steps is generous; the cap only exists so a mis-tagged tile can't
+# pace forever.
+REROLL_LIMIT = 60
+
 # A tap returns when its frames elapse, but the consequence can lag well past
 # that: walking onto a door plays a warp fade lasting far longer than the tap.
 # Reading position immediately would call that successful warp "blocked", so a
@@ -376,10 +384,72 @@ class Navigator:
             'pokemon_center', m, t, capabilities=caps, warpStack=self.warpStack),
             "heal at nearest Pokemon Center", maxSteps)
 
-    def goCatch(self, species, maxSteps=400):
+    def goCatch(self, species, maxSteps=400, rerollLimit=REROLL_LIMIT):
+        """Walk to where `species` lives, then pace until something appears.
+
+        Arriving isn't the goal here - encountering is - so this doesn't stop at
+        the edge of the grass the way the other goals stop at their target.
+        """
+        def onArrive(plan, mapName, tile, steps):
+            encounter = plan.get('encounter')
+            if not encounter:
+                return None   # nothing to pace on; _run reports plain arrival
+            status, reason, paced = self._wander(encounter, rerollLimit)
+            return self._result(status, f"catch {species}", steps + paced, reason)
+
         return self._run(lambda m, t, caps: self.pf.planToCatch(
             species, m, t, capabilities=caps, warpStack=self.warpStack),
-            f"catch {species}", maxSteps)
+            f"catch {species}", maxSteps, onArrive=onArrive)
+
+    def _wander(self, encounter, limit):
+        """Pace back and forth over encounter terrain until a wild appears.
+
+        Returns (status, reason, steps).  Prefers to keep walking the same
+        direction: a direction change costs an extra tap for the turn (see
+        _step), so a straight run is cheaper per roll than a two-tile shuffle,
+        and reversing only when the run ends falls out of that for free.
+        """
+        method, targetMap = encounter['method'], encounter['map']
+        steps = 0
+        lastDir = None
+        blockedDirs = set()
+
+        while steps < limit:
+            fix, state = self.observe()
+            if state and state.get('in_battle'):
+                return ('encountered', f"wild encounter after {steps} step(s) "
+                                       f"in {method}", steps)
+            if fix is None:
+                return ('interrupted',
+                        "lost track of player while pacing (dialog or unknown "
+                        "screen) - operator should resolve", steps)
+
+            mapName, tile = fix['mapName'], tuple(fix['tile'])
+            if mapName != targetMap:
+                # Walked off the map - an unmarked exit under the terrain we
+                # were pacing on. Report it rather than wander a new map.
+                return ('drifted', f"left {targetMap} onto {mapName} while "
+                                   f"pacing; {targetMap} likely has an unpainted "
+                                   f"warp among its {method} tiles", steps)
+
+            moves = self.pf.encounterMoves(mapName, tile, method)
+            if not moves:
+                return ('stuck', f"{mapName} {tile} has no adjacent {method} "
+                                 f"tile to step to", steps)
+
+            choices = [d for d in moves if d not in blockedDirs] or moves
+            direction = lastDir if lastDir in choices else choices[0]
+            outcome = self._step(direction)
+            steps += 1
+            if outcome == 'blocked':
+                blockedDirs.add(direction)
+                lastDir = None
+            else:
+                blockedDirs.clear()
+                lastDir = direction
+
+        return ('no_encounter', f"paced {steps} step(s) over {method} without an "
+                                f"encounter", steps)
 
     def collect(self, itemName, maxSteps=400):
         return self._run(lambda m, t, caps: self.pf.planToItem(
@@ -454,7 +524,14 @@ class Navigator:
         return sorted(self.pf.speciesIndex.keys())
 
     # ── the verify / replan loop ──────────────────────────────────────────
-    def _run(self, planFn, description, maxSteps):
+    def _run(self, planFn, description, maxSteps, onArrive=None):
+        """Walk the plan one verified step at a time, replanning after each.
+
+        ``onArrive`` lets a goal keep working after it reaches its target -
+        goCatch uses it to pace for an encounter. It is called with
+        (plan, mapName, tile, steps) and may return a result dict to finish
+        with, or None to fall through to the plain "arrived" result.
+        """
         steps = 0
         blocked = 0
         # Field-move capabilities come from the bag, which POSITION doesn't
@@ -484,6 +561,10 @@ class Navigator:
                     self._tap(plan['interact'].get('press', 'A'))
                     if plan['target'].get('map') == curMap:
                         self._markCollectedIfItem(plan)
+                if onArrive is not None:
+                    outcome = onArrive(plan, curMap, curTile, steps)
+                    if outcome is not None:
+                        return outcome
                 return self._result("arrived", description, steps, "reached target")
 
             # Take exactly one step, then let the next pass re-observe.

@@ -77,6 +77,34 @@ RETURN_TARGET = "@return"
 # Tiles you interact with from an adjacent square rather than stepping onto.
 INTERACTABLE_TYPES = {ITEM, PERSISTENT_OBJECT, BLOCKED}
 
+# Wild encounters are a property of the *map* (the game keys its encounter
+# tables by map_bank/map_number), not of individual grass patches.  What the
+# tile grid decides is only *where on that map* an encounter can fire, which is
+# a function of the encounter method:
+#
+#   method -> (tile type to stand on, capability needed to stand there)
+#
+# 'fishing' and 'rocksmash' are deliberately absent: both are interactions
+# performed from an adjacent tile with an item we don't model yet (a rod, and
+# the Rock Smash HM against a specific boulder).  Species reachable only by
+# those methods stay in speciesIndex so the planner can say *why* it can't get
+# them, rather than claiming they don't exist.
+ENCOUNTER_TERRAIN = {
+    "grass": (TALL_GRASS, None),
+    "water": (WATER, "surf"),
+}
+
+# Cave floor is "grass" as far as the encounter tables are concerned, but it is
+# never painted TALL_GRASS.  So for a map with land encounters and no painted
+# grass, the encounter tiles are derived from plain walkable floor instead.
+#
+# WALKABLE only - deliberately not UNKNOWN.  An unpainted map reads as all
+# UNKNOWN, and targeting those tiles means walking into unverified terrain; an
+# empty derived set is the honest answer, and _reportUnpaintedEncounterMaps
+# turns it into a worklist instead of a silent failure.  DOOR and WARP are
+# excluded because stepping onto one leaves the map.
+DERIVED_GRASS_TYPES = {WALKABLE}
+
 # Persistent-object categories that act like the old "landmarks": a named place
 # you walk *onto* (not a blocking thing you face + A). Their tiles are treated as
 # walkable, and routing to them lands on the tile instead of approaching it.
@@ -102,17 +130,81 @@ DIRECTIONS = {
     'Right': (1, 0),
 }
 
+OPPOSITE_DIRECTION = {'Up': 'Down', 'Down': 'Up', 'Left': 'Right', 'Right': 'Left'}
+
+
+def canMoveDirection(currentTileType, direction):
+    """Whether a step in `direction` is legal *from* a tile of this type."""
+    # Ledges only allow movement in one direction
+    if currentTileType == LEDGE_DOWN:
+        return direction == 'Down'
+    if currentTileType == LEDGE_LEFT:
+        return direction == 'Left'
+    if currentTileType == LEDGE_RIGHT:
+        return direction == 'Right'
+    return True
+
+
+def encounterTilesFor(tiles, widthTiles, heightTiles, method):
+    """Tiles of a map grid where `method` encounters can actually be triggered.
+
+    Module-level and grid-only so mapEditor can show the same answer for a grid
+    being edited that the pathfinder will compute for it once saved.  Two rules:
+
+      * If the map has painted tiles of the method's terrain (TALL_GRASS for
+        land, WATER for surfing), those are the encounter tiles.
+      * Otherwise, for land encounters only, the map is a cave: plain walkable
+        floor is the encounter terrain.  Cave floor is "grass" as far as the
+        game's encounter tables are concerned but is never painted as such.
+
+    Tiles are then filtered to those with at least one *mutually reachable*
+    neighbour of the same kind.  Rerolling an encounter means stepping back and
+    forth between two tiles, so a lone tile is useless to walk to - and
+    requiring the partner to be an encounter tile too is what stops a reroll
+    next to a ledge from hopping down it and being unable to come back.
+    """
+    terrain = ENCOUNTER_TERRAIN.get(method)
+    if terrain is None:
+        return []
+    tileType, _capability = terrain
+
+    painted = {(c, r) for r in range(heightTiles) for c in range(widthTiles)
+               if tiles[r][c] == tileType}
+    if painted:
+        candidates = painted
+    elif method == 'grass':
+        candidates = {(c, r) for r in range(heightTiles) for c in range(widthTiles)
+                      if tiles[r][c] in DERIVED_GRASS_TYPES}
+    else:
+        return []
+
+    usable = []
+    for (c, r) in candidates:
+        for dName, (dc, dr) in DIRECTIONS.items():
+            nc, nr = c + dc, r + dr
+            if (nc, nr) not in candidates:
+                continue
+            # Both directions must be legal, or we can step across but not
+            # back - exactly the ledge trap this filter exists to avoid.
+            if (canMoveDirection(tiles[r][c], dName) and
+                    canMoveDirection(tiles[nr][nc], OPPOSITE_DIRECTION[dName])):
+                usable.append((c, r))
+                break
+    return usable
+
 
 class Pathfinder:
     """Multi-map A* pathfinder for Pokemon LeafGreen."""
 
-    def __init__(self, tileDataDir=None, connectionDataDir=None):
+    def __init__(self, tileDataDir=None, connectionDataDir=None,
+                 encounterDataDir=None):
         """
-        Initialize the pathfinder with tile and connection data.
+        Initialize the pathfinder with tile, connection, and encounter data.
 
         Args:
             tileDataDir: Path to the tileData directory with per-map JSONs.
             connectionDataDir: Path to the connectionData directory.
+            encounterDataDir: Path to the encounterData directory (ROM dump).
         """
         baseDir = os.path.dirname(__file__)
 
@@ -120,6 +212,8 @@ class Pathfinder:
             tileDataDir = os.path.join(baseDir, 'tileData')
         if connectionDataDir is None:
             connectionDataDir = os.path.join(baseDir, 'connectionData')
+        if encounterDataDir is None:
+            encounterDataDir = os.path.join(baseDir, 'encounterData')
 
         self.tileData = {}      # mapName -> {tiles: [[int]], widthTiles, heightTiles}
         self.connections = {}   # mapName -> [connection dicts]
@@ -130,11 +224,19 @@ class Pathfinder:
         # Semantic indexes (built from tile data) for high-level queries.
         self.itemIndex = defaultdict(list)      # itemName(lower) -> [(map, col, row)]
         self.objectIndex = defaultdict(list)    # category -> [(map, col, row, name)]
-        self.speciesIndex = defaultdict(list)   # species(lower) -> [(map, col, row, patchId)]
+        self.speciesIndex = defaultdict(set)    # species(lower) -> {(map, method)}
         self.walkableObjectTiles = {}           # mapName -> set((col, row)) walk-through objects
+
+        # Encounters, keyed by map rather than by patch (the game keys its
+        # tables by map_bank/map_number, so a patch-level list was always a
+        # duplicate of the map's).
+        self.mapEncounters = {}     # mapName -> [{species, levelMin, ...}]
+        self.encounterTiles = {}    # (mapName, method) -> [(col, row)] wanderable
+        self.unpaintedEncounterMaps = []   # maps with a table but no usable tiles
 
         self._loadTileData(tileDataDir)
         self._loadConnections(connectionDataDir)
+        self._loadEncounters(connectionDataDir, encounterDataDir)
         self._buildMapGraph()
         self._buildSemanticIndexes()
 
@@ -143,6 +245,7 @@ class Pathfinder:
               f"{len(self.landmarks)} landmarks, "
               f"{sum(len(v) for v in self.objectIndex.values())} objects, "
               f"{len(self.speciesIndex)} catchable species")
+        self._reportUnpaintedEncounterMaps()
 
     def _loadTileData(self, tileDataDir):
         """Load all tile classification JSONs."""
@@ -174,6 +277,83 @@ class Pathfinder:
         self.landmarks = data.get('landmarks', {})
         self.instances = data.get('instances', {})
 
+    def _loadEncounters(self, connectionDataDir, encounterDataDir):
+        """Resolve each map's wild-encounter table.
+
+        Two sources, in priority order:
+
+          1. An ``encounters`` list in the map's own tileData JSON.  This is the
+             manual override, for maps the ROM dump misses or gets wrong.
+          2. encounterData/romEncounters.json, keyed "bank,number".
+
+        The (bank, number) for a map comes from mapIds.json; map images are
+        named ``bank-number-Name`` so the name itself is a usable fallback when
+        a map hasn't been registered yet.
+        """
+        romPath = os.path.join(encounterDataDir, 'romEncounters.json')
+        romEncounters = {}
+        if os.path.exists(romPath):
+            with open(romPath, 'r') as f:
+                romEncounters = json.load(f)
+        else:
+            print(f"Pathfinder: no ROM encounter dump at {romPath} - only maps "
+                  f"with a manual 'encounters' list will be catchable.")
+
+        idsPath = os.path.join(connectionDataDir, 'mapIds.json')
+        mapIds = {}
+        if os.path.exists(idsPath):
+            with open(idsPath, 'r') as f:
+                mapIds = json.load(f)
+
+        for mapName, data in self.tileData.items():
+            override = data.get('encounters')
+            if override:
+                self.mapEncounters[mapName] = override
+                continue
+            for (bank, number) in self._bankNumbersFor(mapName, mapIds):
+                table = romEncounters.get(f'{bank},{number}')
+                if table:
+                    self.mapEncounters[mapName] = table
+                    break
+
+    @staticmethod
+    def _bankNumbersFor(mapName, mapIds):
+        """Every (bank, number) a map answers to, best source first."""
+        pairs = [tuple(p) for p in mapIds.get(mapName, []) if len(p) == 2]
+        # Map files are named "bank-number-Name", so the name is a fallback for
+        # maps not yet registered in mapIds.json.
+        parts = mapName.split('-', 2)
+        if len(parts) == 3 and parts[0].isdigit() and parts[1].isdigit():
+            fromName = (int(parts[0]), int(parts[1]))
+            if fromName not in pairs:
+                pairs.append(fromName)
+        return pairs
+
+    def _buildEncounterTiles(self, mapName, method):
+        """Tiles on ``mapName`` where ``method`` encounters can be triggered."""
+        info = self.tileData.get(mapName)
+        if info is None:
+            return []
+        return encounterTilesFor(info['tiles'], info['widthTiles'],
+                                 info['heightTiles'], method)
+
+    def _reportUnpaintedEncounterMaps(self):
+        """List maps that have an encounter table but no tiles to trigger it on.
+
+        Almost always means the map hasn't been painted yet - an unpainted map
+        is all UNKNOWN, which DERIVED_GRASS_TYPES deliberately excludes. Printing
+        it makes the gap a worklist instead of a species that silently can't be
+        caught.
+        """
+        if not self.unpaintedEncounterMaps:
+            return
+        names = sorted(self.unpaintedEncounterMaps)
+        print(f"Pathfinder: {len(names)} map(s) have wild encounters but no "
+              f"reachable encounter tiles - paint their walkable floor to make "
+              f"the species on them catchable:")
+        for name in names:
+            print(f"    {name}")
+
     def _buildMapGraph(self):
         """Build a high-level graph of map-to-map connections.
 
@@ -187,10 +367,11 @@ class Pathfinder:
                     self.mapGraph[mapName].append((toMap, conn))
 
     def _buildSemanticIndexes(self):
-        """Index items, persistent objects, and grass encounters for queries.
+        """Index items, persistent objects, and wild encounters for queries.
 
         Note the legacy coordinate quirk: items/objects dicts are keyed
-        "row,col" (see mapEditor.py), while grass-patch tile lists are [col,row].
+        "row,col" (see mapEditor.py), while tile coordinates elsewhere are
+        (col, row).
         """
         for mapName, data in self.tileData.items():
             for key, name in data.get('items', {}).items():
@@ -208,15 +389,26 @@ class Pathfinder:
             if walkThrough:
                 self.walkableObjectTiles[mapName] = walkThrough
 
-            for patch in data.get('grassPatches', []):
-                species_seen = {e['species'].lower() for e in patch.get('encounters', [])}
-                tiles = patch.get('tiles', [])
-                if not tiles:
-                    continue
-                col, row = tiles[0]  # representative tile to walk into
-                for species in species_seen:
-                    self.speciesIndex[species].append(
-                        (mapName, col, row, patch.get('id', '')))
+        # Species are indexed per (map, method): the encounter table says *what*
+        # lives here and *how* it is met, and the tile grid says where on the map
+        # that method can be used.  Species reachable only by an unsupported
+        # method are still indexed, so planToCatch can explain itself.
+        for mapName, table in self.mapEncounters.items():
+            methods = {e.get('method', 'grass') for e in table}
+            for method in methods:
+                if method in ENCOUNTER_TERRAIN:
+                    tiles = self._buildEncounterTiles(mapName, method)
+                    if tiles:
+                        self.encounterTiles[(mapName, method)] = tiles
+                    elif method == 'grass':
+                        # Land encounters with nowhere to trigger them means the
+                        # map's floor hasn't been painted yet.
+                        self.unpaintedEncounterMaps.append(mapName)
+            for entry in table:
+                species = entry.get('species', '').lower()
+                if species:
+                    self.speciesIndex[species].add(
+                        (mapName, entry.get('method', 'grass')))
 
     # ── High-Level Navigation ────────────────────────────────────────────
 
@@ -269,12 +461,28 @@ class Pathfinder:
         Returns:
             list of (mapName, col, row) waypoints, or None.
         """
+        return self.findPathToSet(fromMap, fromTile, toMap, {tuple(toTile)},
+                                  capabilities=capabilities, warpStack=warpStack)
+
+    def findPathToSet(self, fromMap, fromTile, toMap, toTiles, capabilities=None,
+                      warpStack=None):
+        """Find a path to the nearest of several acceptable tiles on ``toMap``.
+
+        Same shape as findPath, but the destination is a *set*.  Routing to
+        "any encounter tile in this cave" would otherwise mean one full search
+        per candidate tile; here the destination map is swept once.
+
+        Returns:
+            list of (mapName, col, row) waypoints, or None.
+        """
         fromTile = tuple(fromTile)
-        toTile = tuple(toTile)
+        toTiles = {tuple(t) for t in toTiles}
+        if not toTiles:
+            return None
 
         # Same map? Just do tile-level A*
         if fromMap == toMap:
-            tilePath = self._astarTiles(fromMap, fromTile, toTile, capabilities)
+            tilePath = self._searchTiles(fromMap, fromTile, toTiles, capabilities)
             if tilePath:
                 return [(fromMap, c, r) for c, r in tilePath]
             return None
@@ -307,10 +515,11 @@ class Pathfinder:
             currentMap = nxt
             currentPos = tuple(connection['toTile'])
 
-        # Final segment across the destination map to the goal tile.
-        tilePath = self._astarTiles(currentMap, currentPos, toTile, capabilities)
+        # Final segment across the destination map to the goal tile(s).
+        tilePath = self._searchTiles(currentMap, currentPos, toTiles, capabilities)
         if tilePath is None:
-            print(f"Pathfinder: No tile path on {currentMap} from {currentPos} to {toTile}")
+            print(f"Pathfinder: No tile path on {currentMap} from {currentPos} "
+                  f"to {toTiles if len(toTiles) == 1 else f'{len(toTiles)} goal tiles'}")
             return None
         for col, row in tilePath:
             fullPath.append((currentMap, col, row))
@@ -391,12 +600,30 @@ class Pathfinder:
         Returns:
             list of (col, row) tiles from start to goal, or None.
         """
+        return self._searchTiles(mapName, start, {tuple(goal)}, capabilities)
+
+    def _searchTiles(self, mapName, start, goals, capabilities=None):
+        """Shortest path from ``start`` to whichever of ``goals`` is cheapest.
+
+        With a single goal this is ordinary A* (the Manhattan heuristic is
+        admissible because every move costs at least 1.0).  With several goals
+        there is no single point to aim at, so the heuristic drops to zero and
+        the search degrades to Dijkstra - still one sweep, which is what makes
+        "nearest encounter tile out of nine hundred" affordable.
+
+        Returns:
+            list of (col, row) tiles from start to the chosen goal, or None.
+        """
         capabilities = capabilities or set()
+        goals = {tuple(g) for g in goals}
+        if not goals:
+            return None
+
         tileInfo = self.tileData.get(mapName)
         if tileInfo is None:
             # No tile data: assume all tiles are walkable (direct path)
             print(f"Pathfinder: No tile data for {mapName}, using direct path")
-            return self._directPath(start, goal)
+            return self._directPath(start, min(goals))
 
         tiles = tileInfo['tiles']
         tw = tileInfo['widthTiles']
@@ -404,27 +631,29 @@ class Pathfinder:
         passable = self.walkableObjectTiles.get(mapName, set())  # landmark objects
 
         startCol, startRow = start
-        goalCol, goalRow = goal
-
-        # Validate bounds
         if not (0 <= startCol < tw and 0 <= startRow < th):
             print(f"Pathfinder: Start {start} out of bounds on {mapName} ({tw}x{th})")
             return None
-        if not (0 <= goalCol < tw and 0 <= goalRow < th):
-            print(f"Pathfinder: Goal {goal} out of bounds on {mapName} ({tw}x{th})")
+        goals = {(c, r) for (c, r) in goals if 0 <= c < tw and 0 <= r < th}
+        if not goals:
+            print(f"Pathfinder: all goals out of bounds on {mapName} ({tw}x{th})")
             return None
 
-        # A* search
+        # Aim at the goal only when there is exactly one; otherwise h == 0.
+        target = next(iter(goals)) if len(goals) == 1 else None
+
+        def heuristic(tile):
+            return self._heuristic(tile, target) if target else 0
+
         openSet = []
         heapq.heappush(openSet, (0, start))
         cameFrom = {}
         gScore = {start: 0}
-        fScore = {start: self._heuristic(start, goal)}
 
         while openSet:
             _, current = heapq.heappop(openSet)
 
-            if current == goal:
+            if current in goals:
                 return self._reconstructPath(cameFrom, current)
 
             col, row = current
@@ -435,14 +664,14 @@ class Pathfinder:
                 if not (0 <= nc < tw and 0 <= nr < th):
                     continue
 
-                # Check if tile is walkable (goal may be reached even if it is an
-                # interactable; callers normally pass a walkable adjacent goal).
+                # Check if tile is walkable (a goal may be reached even if it is
+                # an interactable; callers normally pass a walkable adjacent
+                # goal).
                 tileType = tiles[nr][nc]
+                isGoal = (nc, nr) in goals
                 walkable = (self._isWalkable(tileType, capabilities)
                             or (nc, nr) in passable)
-                if (nc, nr) != goal and not walkable:
-                    continue
-                if (nc, nr) == goal and not walkable and tileType not in INTERACTABLE_TYPES:
+                if not walkable and not (isGoal and tileType in INTERACTABLE_TYPES):
                     continue
 
                 # Check ledge restrictions
@@ -458,10 +687,11 @@ class Pathfinder:
                 if tentativeG < gScore.get(neighbor, float('inf')):
                     cameFrom[neighbor] = current
                     gScore[neighbor] = tentativeG
-                    fScore[neighbor] = tentativeG + self._heuristic(neighbor, goal)
-                    heapq.heappush(openSet, (fScore[neighbor], neighbor))
+                    heapq.heappush(openSet,
+                                   (tentativeG + heuristic(neighbor), neighbor))
 
-        print(f"Pathfinder: No path found on {mapName} from {start} to {goal}")
+        where = target if target else f"{len(goals)} goal tiles"
+        print(f"Pathfinder: No path found on {mapName} from {start} to {where}")
         return None
 
     def _isWalkable(self, tileType, capabilities=None):
@@ -474,14 +704,7 @@ class Pathfinder:
 
     def _canMoveDirection(self, currentTileType, direction):
         """Check if movement in a direction is allowed from the current tile type."""
-        # Ledges only allow movement in one direction
-        if currentTileType == LEDGE_DOWN:
-            return direction == 'Down'
-        if currentTileType == LEDGE_LEFT:
-            return direction == 'Left'
-        if currentTileType == LEDGE_RIGHT:
-            return direction == 'Right'
-        return True
+        return canMoveDirection(currentTileType, direction)
 
     def _heuristic(self, a, b):
         """Manhattan distance heuristic."""
@@ -650,15 +873,69 @@ class Pathfinder:
         return self._nearest(candidates, fromMap, fromTile, interact=True,
                              notFound=f"no item '{itemName}' available", **kwargs)
 
-    def planToCatch(self, species, fromMap, fromTile, **kwargs):
-        """Plan a route to the nearest grass patch containing a species.
+    def planToCatch(self, species, fromMap, fromTile, capabilities=None,
+                    warpStack=None):
+        """Plan a route to the nearest tile where ``species`` can be encountered.
 
-        Grass tiles are walkable, so this steps *onto* the patch (no interact).
+        Encounter terrain is walkable (grass) or surfable (water), so this steps
+        *onto* it rather than interacting with it.  The returned plan carries an
+        extra ``encounter`` key - {method, map, tiles} - naming every tile on the
+        destination map that triggers the same encounter table, which is what the
+        navigator steps back and forth between to reroll.
+
+        Failure reasons are specific on purpose: "needs surf" and "map not
+        painted yet" are both actionable, while "not found" is not.
         """
-        candidates = [(m, c, r) for (m, c, r, _pid)
-                      in self.speciesIndex.get(species.lower(), [])]
-        return self._nearest(candidates, fromMap, fromTile, interact=False,
-                             notFound=f"'{species}' not found in any tagged grass", **kwargs)
+        found = self.speciesIndex.get(species.lower(), set())
+        if not found:
+            return self._failPlan(None, None,
+                                  f"'{species}' does not appear in any known "
+                                  f"encounter table")
+
+        capabilities = capabilities or set()
+        best = None
+        reasons = []
+        for (mapName, method) in sorted(found):
+            terrain = ENCOUNTER_TERRAIN.get(method)
+            if terrain is None:
+                reasons.append(f"{mapName}: only by {method}, not supported yet")
+                continue
+            _tileType, needed = terrain
+            if needed and needed not in capabilities:
+                reasons.append(f"{mapName}: needs {needed}")
+                continue
+            tiles = self.encounterTiles.get((mapName, method))
+            if not tiles:
+                reasons.append(f"{mapName}: no usable {method} tiles "
+                               f"(map may not be painted yet)")
+                continue
+
+            path = self.findPathToSet(fromMap, fromTile, mapName, set(tiles),
+                                      capabilities=capabilities,
+                                      warpStack=warpStack)
+            if path is None:
+                reasons.append(f"{mapName}: no route")
+                continue
+            directions = self._pathToDirections(path)
+            if best is not None and len(directions) >= len(best[0]):
+                continue
+            landing = path[-1]
+            best = (directions, {
+                "found": True,
+                "target": {"map": mapName, "tile": [landing[1], landing[2]]},
+                "path": path,
+                "directions": directions,
+                "interact": None,
+                "encounter": {"method": method, "map": mapName,
+                              "tiles": [list(t) for t in tiles]},
+                "reason": "ok",
+            })
+
+        if best is None:
+            return self._failPlan(None, None,
+                                  f"'{species}' is known but unreachable - "
+                                  + "; ".join(reasons))
+        return best[1]
 
     def _nearest(self, candidates, fromMap, fromTile, interact, notFound,
                  **kwargs):
@@ -674,6 +951,35 @@ class Pathfinder:
         if best is None:
             return self._failPlan(None, None, notFound)
         return best[1]
+
+    def encounterMoves(self, mapName, tile, method):
+        """Directions from ``tile`` onto an adjacent tile of the same encounter set.
+
+        This is what a reroll walks along.  Membership of encounterTiles already
+        guarantees at least one such neighbour exists, and that the step is legal
+        in both directions - so anything this returns can be stepped and stepped
+        back, which is the whole requirement for pacing in place.
+        """
+        tiles = {tuple(t) for t in self.encounterTiles.get((mapName, method), ())}
+        tile = tuple(tile)
+        info = self.tileData.get(mapName)
+        if tile not in tiles or info is None:
+            return []
+        grid = info['tiles']
+        col, row = tile
+        moves = []
+        for dName, (dc, dr) in DIRECTIONS.items():
+            nc, nr = col + dc, row + dr
+            if (nc, nr) not in tiles:
+                continue
+            if (self._canMoveDirection(grid[row][col], dName) and
+                    self._canMoveDirection(grid[nr][nc], OPPOSITE_DIRECTION[dName])):
+                moves.append(dName)
+        return moves
+
+    def encountersOn(self, mapName):
+        """The wild-encounter table for a map (ROM dump or manual override)."""
+        return self.mapEncounters.get(mapName, [])
 
     def _approach(self, mapName, objTile, capabilities=None):
         """Return (approachTile, facingDirection) for interacting with objTile.

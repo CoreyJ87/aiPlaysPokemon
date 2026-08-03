@@ -10,6 +10,7 @@ As a library:
         gba.tap_sequence(["DOWN", "DOWN", "A"], frames=8)
         state = gba.game_state()
         gba.screenshot("shot.png")
+        gba.screen()                   # what screen/menu is up right now
 
     # or without the context manager
     gba = MGBAClient(host="127.0.0.1", port=54321)
@@ -23,7 +24,10 @@ As a script:
     python mgba_client.py tap A 16     # tap A button for 16 frames
     python mgba_client.py screenshot   # save screenshot to screenshot.png
     python mgba_client.py game_state   # print full game state
+    python mgba_client.py screen       # print current screen/UI state
     python mgba_client.py ping         # health check
+
+Address discovery (locating gStringVar4, gTasks, ...) lives in discover.py.
 
 Multiple clients can connect simultaneously.
 """
@@ -37,6 +41,93 @@ HOST = "127.0.0.1"
 PORT = 54321
 
 BUTTONS = ("A", "B", "START", "SELECT", "UP", "DOWN", "LEFT", "RIGHT", "L", "R")
+
+# GBA memory regions — the ranges PEEK/FIND accept
+EWRAM_START, EWRAM_SIZE = 0x02000000, 0x40000   # 256 KB, save blocks & party
+IWRAM_START, IWRAM_SIZE = 0x03000000, 0x08000   # 32 KB, gMain & gTasks
+ROM_START = 0x08000000
+
+# Symbols the server will accept via SET_ADDR
+KNOWN_SYMBOLS = ("gTasks", "gStringVar1", "gStringVar2", "gStringVar3",
+                 "gStringVar4", "gPaletteFade")
+
+
+# -------------------------------------------------------------------------
+# Gen 3 text codec
+#
+# Mirrors GEN3_CHARS in mgba_server.lua. Kept here too so offline tools (the
+# discovery harness, textAnalysis) can encode search needles and decode raw
+# memory dumps without a live emulator connection.
+# -------------------------------------------------------------------------
+
+GEN3_DECODE = {0x00: " "}
+for _i in range(26):
+    GEN3_DECODE[0xBB + _i] = chr(65 + _i)   # A-Z
+    GEN3_DECODE[0xD5 + _i] = chr(97 + _i)   # a-z
+for _i in range(10):
+    GEN3_DECODE[0xA1 + _i] = chr(48 + _i)   # 0-9
+GEN3_DECODE.update({
+    0xAB: "!", 0xAC: "?", 0xAD: ".", 0xAE: "-", 0xB0: "...",
+    0xB1: '"', 0xB2: '"', 0xB3: "'", 0xB4: "'", 0xB5: "M", 0xB6: "F",
+    0xB7: "$", 0xB8: ",", 0xB9: "x", 0xBA: "/", 0xF0: ":",
+})
+
+# Control codes — present in dialog text, never in names
+GEN3_TERMINATOR = 0xFF    # end of string
+GEN3_NEWLINE = 0xFE       # line break
+GEN3_PLACEHOLDER = 0xFD   # gStringVarN slot; consumes 1 argument byte
+GEN3_EXT_CTRL = 0xFC      # colour/font/delay; consumes argument bytes
+GEN3_PAGE_BREAK = 0xFB    # wait for A, clear box
+GEN3_SCROLL = 0xFA        # wait for A, scroll up
+
+# Lowest code wins so encoding is deterministic (0xB1/0xB2 both decode to '"')
+GEN3_ENCODE = {}
+for _code, _ch in sorted(GEN3_DECODE.items()):
+    if len(_ch) == 1:
+        GEN3_ENCODE.setdefault(_ch, _code)
+
+
+def gen3_encode(text: str) -> bytes:
+    """ASCII -> Gen 3 bytes. Unmappable characters become 0x00 (space)."""
+    return bytes(GEN3_ENCODE.get(ch, 0x00) for ch in text)
+
+
+def gen3_decode(data: bytes, stop_at_terminator: bool = True) -> str:
+    """Gen 3 bytes -> ASCII, stopping at 0xFF by default.
+
+    For names and other plain strings. Use gen3_decode_text() for dialog,
+    which is full of control codes this would render as "?".
+    """
+    out = []
+    for b in data:
+        if b == GEN3_TERMINATOR and stop_at_terminator:
+            break
+        out.append(GEN3_DECODE.get(b, "?"))
+    return "".join(out)
+
+
+def gen3_decode_text(data: bytes) -> str:
+    """Gen 3 message text -> ASCII, translating control codes to whitespace.
+
+    Mirrors readGen3Text() in mgba_server.lua. Same caveat: 0xFC's parameter
+    length varies and we assume one byte.
+    """
+    out, i = [], 0
+    while i < len(data):
+        b = data[i]
+        if b == GEN3_TERMINATOR:
+            break
+        elif b in (GEN3_NEWLINE, GEN3_PAGE_BREAK, GEN3_SCROLL):
+            out.append("\n")
+        elif b == GEN3_PLACEHOLDER:
+            out.append("{VAR}")
+            i += 1
+        elif b == GEN3_EXT_CTRL:
+            i += 1
+        else:
+            out.append(GEN3_DECODE.get(b, "?"))
+        i += 1
+    return "".join(out)
 
 
 class MGBAError(RuntimeError):
@@ -191,6 +282,99 @@ class MGBAClient:
             raise MGBAError(f"Unexpected POSITION response: {header}")
         return json.loads(parts[1])
 
+    def _send_json(self, command: str) -> dict:
+        """Send a command whose OK response carries a JSON payload."""
+        header, _ = self.send(command)
+        parts = header.split("|", 1)
+        if len(parts) < 2:
+            raise MGBAError(f"Unexpected {command.split('|')[0]} response: {header}")
+        return json.loads(parts[1])
+
+    # ---- screen / UI state ------------------------------------------------
+
+    def screen(self) -> dict:
+        """What is on screen right now, read from gMain.
+
+        Returns callback1/callback2/saved_callback as hex strings, plus
+        main_state, in_battle and the currently held buttons.
+
+        `callback2` is the screen identity — a distinct ROM function pointer
+        per screen (overworld, battle, bag, party menu, naming screen...).
+        It does NOT change when a dialog box or the START menu opens, since
+        those run as tasks under the overworld callback; use tasks() for
+        those. Once gTasks/gStringVar4 are registered via set_addr(), this
+        also returns `tasks`, `task_fingerprint` and `dialog_text`.
+        """
+        return self._send_json("SCREEN")
+
+    def dialog(self) -> dict:
+        """Current dialog text from gStringVar4: {text, active, vars}.
+
+        Raises MGBAError until gStringVar4 has been located and registered —
+        see discover.py.
+        """
+        return self._send_json("DIALOG")
+
+    def tasks(self) -> dict:
+        """Active gTasks entries: {count, tasks: [{slot, func, data}]}.
+
+        The set of active `func` pointers fingerprints which UI overlays are
+        running. Raises MGBAError until gTasks is registered.
+        """
+        return self._send_json("TASKS")
+
+    # ---- memory inspection / address discovery ----------------------------
+
+    def peek(self, addr: int, length: int = 16) -> bytes:
+        """Read up to 4096 bytes of emulator memory."""
+        header, _ = self.send(f"PEEK|{addr:08X}|{length}")
+        return bytes.fromhex(header.split("|", 1)[1])
+
+    def read_range(self, addr: int, length: int) -> bytes:
+        """Read an arbitrarily long range, chunking into PEEK calls."""
+        chunks, offset = [], 0
+        while offset < length:
+            size = min(4096, length - offset)
+            chunks.append(self.peek(addr + offset, size))
+            offset += size
+        return b"".join(chunks)
+
+    def find(self, start: int, length: int, pattern: bytes) -> list:
+        """Search a memory range for a literal byte pattern.
+
+        Returns a list of absolute addresses (capped at 64 matches).
+        """
+        cmd = f"FIND|{start:08X}|{length}|{pattern.hex().upper()}"
+        return [int(a, 16) for a in self._send_json(cmd)["matches"]]
+
+    def find_text(self, text: str, start: int = EWRAM_START,
+                  length: int = EWRAM_SIZE) -> list:
+        """Search for ASCII text encoded as Gen 3 characters.
+
+        Defaults to scanning all of EWRAM. This is how you locate
+        gStringVar4: trigger a dialog with distinctive wording, then search
+        for a phrase from it.
+        """
+        result = self._send_json(f"FINDTEXT|{start:08X}|{length}|{text}")
+        return [int(a, 16) for a in result["matches"]]
+
+    def set_addr(self, name: str, addr: int = None):
+        """Register a discovered symbol address (or clear it with None)."""
+        if name not in KNOWN_SYMBOLS:
+            raise ValueError(
+                f"Unknown symbol {name!r}; expected one of {', '.join(KNOWN_SYMBOLS)}")
+        self.send(f"SET_ADDR|{name}|" + (f"{addr:08X}" if addr is not None else "-"))
+
+    def addrs(self) -> dict:
+        """Which symbols are registered, and which are still missing."""
+        return self._send_json("ADDRS")
+
+    def load_addrs(self, mapping: dict):
+        """Register several symbols at once, e.g. from a saved JSON file."""
+        for name, addr in mapping.items():
+            if name in KNOWN_SYMBOLS:
+                self.set_addr(name, int(addr, 16) if isinstance(addr, str) else addr)
+
     # ---- convenience accessors -------------------------------------------
 
     def player(self) -> dict:
@@ -263,6 +447,25 @@ def game_state(sock: socket.socket):
 # -------------------------------------------------------------------------
 # Formatting helpers
 # -------------------------------------------------------------------------
+
+def _format_hexdump(addr: int, data: bytes, width: int = 16) -> str:
+    """Classic hex dump with a Gen 3 text column beside the ASCII one.
+
+    The Gen 3 column is what makes this useful here: it turns an anonymous
+    block of bytes into readable game text the moment you land on a string
+    buffer, which is how gStringVar4 gives itself away.
+    """
+    lines = []
+    for offset in range(0, len(data), width):
+        row = data[offset:offset + width]
+        hex_part = " ".join(f"{b:02X}" for b in row).ljust(width * 3 - 1)
+        ascii_part = "".join(chr(b) if 32 <= b < 127 else "." for b in row)
+        gen3_part = "".join(
+            GEN3_DECODE.get(b, ".") if len(GEN3_DECODE.get(b, ".")) == 1 else "~"
+            for b in row)
+        lines.append(f"{addr + offset:08X}  {hex_part}  |{ascii_part}|  |{gen3_part}|")
+    return "\n".join(lines)
+
 
 def _format_types(pk: dict) -> str:
     types = pk.get("type1", "?")
@@ -361,6 +564,11 @@ def interactive(client: MGBAClient):
     print("  tap <button> [frames]   - e.g. tap A, tap START 16")
     print("  screenshot [filename]   - save screenshot")
     print("  game_state              - print full game state")
+    print("  screen                  - current screen/UI state")
+    print("  dialog                  - current dialog text")
+    print("  tasks                   - active task fingerprint")
+    print("  peek <hex_addr> [len]   - hex dump memory")
+    print("  addrs                   - registered symbol addresses")
     print("  ping                    - health check")
     print("  quit                    - exit")
     print()
@@ -393,6 +601,21 @@ def interactive(client: MGBAClient):
                 print("PING: OK")
             elif cmd == "game_state":
                 client.print_game_state()
+            elif cmd == "screen":
+                print(json.dumps(client.screen(), indent=2))
+            elif cmd == "dialog":
+                print(json.dumps(client.dialog(), indent=2))
+            elif cmd == "tasks":
+                print(json.dumps(client.tasks(), indent=2))
+            elif cmd == "addrs":
+                print(json.dumps(client.addrs(), indent=2))
+            elif cmd == "peek":
+                if len(parts) < 2:
+                    print("Usage: peek <hex_addr> [len]")
+                    continue
+                addr = int(parts[1], 16)
+                length = int(parts[2]) if len(parts) > 2 else 16
+                print(_format_hexdump(addr, client.peek(addr, length)))
             elif cmd in ("quit", "exit", "q"):
                 break
             else:
@@ -425,6 +648,8 @@ def main():
                     print("PING: OK")
                 elif cmd == "game_state":
                     client.print_game_state()
+                elif cmd in ("screen", "dialog", "tasks", "addrs"):
+                    print(json.dumps(getattr(client, cmd)(), indent=2))
                 else:
                     print(f"Unknown command: {cmd}")
             except (MGBAError, ValueError) as e:

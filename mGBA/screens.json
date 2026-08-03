@@ -1,0 +1,39 @@
+{
+  "080565C9": "overworld",
+  "0805681D": "overworld_fade_in",
+  "08056761": "map_load",
+  "08056731": "map_load_start",
+  "080C9BE5": "map_change_warp",
+  "080567F1": "return_to_field_from_battle",
+  "080568BD": "overworld_sub",
+  "080568F5": "overworld_sub",
+  "08056659": "new_game_first_map",
+
+  "080565BD": "battle_start_from_field",
+  "0800FDB1": "battle_init",
+  "0801051D": "battle_intro",
+  "08011115": "battle_main",
+  "080777FD": "battle_reshow_after_menu",
+
+  "08107F61": "bag_init",
+  "08107F31": "bag_main",
+
+  "08078BB1": "?title_or_copyright",
+  "080EC851": "?intro_movie_1",
+  "080EC85D": "?intro_movie_2",
+  "080EC9C1": "?intro_movie_3",
+  "0800C315": "?main_menu_init",
+  "0812EB61": "?main_menu",
+  "08130CB5": "?main_menu_return",
+  "0809D9C9": "?options_init",
+  "0809FB59": "?options_main",
+
+  "0810D4F1": "?menu_init_UNKNOWN_A",
+  "0810D4C1": "?menu_main_UNKNOWN_A",
+  "080895A1": "?menu_init_UNKNOWN_B",
+  "08089059": "?menu_main_UNKNOWN_B",
+  "0808843D": "?naming_or_script_1",
+  "08088345": "?naming_or_script_2",
+  "08088371": "?naming_or_script_3",
+  "0808CDAD": "?UNKNOWN_C"
+}

@@ -528,24 +528,24 @@
           "type": "door",
           "fromTile": [
             14,
-            6
-          ],
-          "toMap": "3-20-Route2",
-          "toTile": [
-            5,
-            13
-          ]
-        },
-        {
-          "type": "door",
-          "fromTile": [
-            14,
             15
           ],
           "toMap": "1-0-ViridianForest",
           "toTile": [
             12,
             15
+          ]
+        },
+        {
+          "type": "door",
+          "fromTile": [
+            14,
+            6
+          ],
+          "toMap": "3-20-Route2",
+          "toTile": [
+            5,
+            13
           ]
         }
       ]
@@ -565,6 +565,18 @@
           "toTile": [
             14,
             15
+          ]
+        },
+        {
+          "type": "door",
+          "fromTile": [
+            36,
+            68
+          ],
+          "toMap": "15-0-Route2_ViridianForest_SouthEntrance",
+          "toTile": [
+            14,
+            7
           ]
         }
       ]

@@ -38,7 +38,7 @@ Output:
 import json
 import os
 import heapq
-from collections import defaultdict
+from collections import defaultdict, deque
 
 
 # Tile type constants
@@ -233,6 +233,11 @@ class Pathfinder:
         self.mapEncounters = {}     # mapName -> [{species, levelMin, ...}]
         self.encounterTiles = {}    # (mapName, method) -> [(col, row)] wanderable
         self.unpaintedEncounterMaps = []   # maps with a table but no usable tiles
+
+        # (mapName, startTile, capabilities) -> frozenset of tiles gettable from
+        # it. Route-time only, and small: a search touches a handful of entry
+        # tiles per map, not every tile.
+        self._reachCache = {}
 
         self._loadTileData(tileDataDir)
         self._loadConnections(connectionDataDir)
@@ -480,15 +485,21 @@ class Pathfinder:
         if not toTiles:
             return None
 
-        # Same map? Just do tile-level A*
+        # Same map? Try tile-level A* first - but this is not a dead end when it
+        # fails. "Route 2 south -> Route 2 north" is a same-map request that can
+        # only be served by leaving the map and coming back through the forest,
+        # so a failure here falls through to the map search rather than
+        # returning None.
         if fromMap == toMap:
             tilePath = self._searchTiles(fromMap, fromTile, toTiles, capabilities)
             if tilePath:
                 return [(fromMap, c, r) for c, r in tilePath]
-            return None
 
-        # Different maps: find map sequence first
-        mapRoute = self._findMapRoute(fromMap, toMap, warpStack)
+        # Find the map sequence first. Reachability-aware: which exits of a map
+        # are usable depends on which tile we arrive on.
+        mapRoute = self._findMapRoute(fromMap, toMap, warpStack,
+                                      fromTile=fromTile, toTiles=toTiles,
+                                      capabilities=capabilities)
         if mapRoute is None:
             print(f"Pathfinder: No route from {fromMap} to {toMap}")
             return None
@@ -554,37 +565,173 @@ class Pathfinder:
                     result.append((resolvedMap, resolvedConn))
         return result
 
-    def _findMapRoute(self, fromMap, toMap, warpStack=None):
-        """
-        BFS to find the sequence of maps to traverse.
+    def _findMapRoute(self, fromMap, toMap, warpStack=None, fromTile=None,
+                      toTiles=(), capabilities=None):
+        """BFS for the sequence of maps to traverse.
+
+        Nodes are (map, the tile you arrive on), not just map, because a map is
+        not necessarily one place. Route 2's north and south halves are the same
+        map but are joined only through Viridian Forest, so which of its exits
+        you can use depends on where you came in. Keying on the map alone made
+        this return Route2 -> PewterCity - the two genuinely do touch - and then
+        findPathToSet died on a hop with no walkable path across it, reporting
+        no route to Pewter at all.
+
+        `fromTile` is optional so callers that only care about map adjacency
+        keep the old cheap behaviour; without it no reachability is consulted.
 
         Returns:
             list of (currentMap, nextMap, connection) tuples, or None.
         """
-        if fromMap == toMap:
-            return []
+        if fromTile is None:
+            # Map-adjacency only: no tile data consulted, no reachability. Kept
+            # for callers that just want to know whether two maps are linked.
+            if fromMap == toMap:
+                return []
+            queue = deque([(fromMap, [])])
+            visited = {fromMap}
+            while queue:
+                current, path = queue.popleft()
+                for neighbor, conn in self._neighbors(current, warpStack):
+                    if neighbor in visited:
+                        continue
+                    visited.add(neighbor)
+                    newPath = path + [(current, neighbor, conn)]
+                    if neighbor == toMap:
+                        return newPath
+                    queue.append((neighbor, newPath))
+            return None
 
-        # BFS
-        queue = [(fromMap, [])]
-        visited = {fromMap}
+        start = (fromMap, tuple(fromTile))
+        queue = deque([(start, [])])
+        visited = {start}
 
         while queue:
-            current, path = queue.pop(0)
+            (mapName, entry), path = queue.popleft()
+            reach = self._reachableFrom(mapName, entry, capabilities)
 
-            for neighbor, conn in self._neighbors(current, warpStack):
-                if neighbor in visited:
+            if mapName == toMap and self._goalReachable(mapName, toTiles, reach):
+                return path
+
+            for neighbor, conn in self._neighbors(mapName, warpStack):
+                landing = conn.get('toTile')
+                if landing is None:
                     continue
-                visited.add(neighbor)
-
-                newPath = path + [(current, neighbor, conn)]
-                if neighbor == toMap:
-                    return newPath
-
-                queue.append((neighbor, newPath))
+                # The doorway has to be reachable from where we came in. This is
+                # the whole of the fix; everything else here is bookkeeping.
+                if reach is not None and tuple(conn['fromTile']) not in reach:
+                    continue
+                node = (neighbor, tuple(landing))
+                if node in visited:
+                    continue
+                visited.add(node)
+                queue.append((node, path + [(mapName, neighbor, conn)]))
 
         return None
 
     # ── Tile-Level A* ────────────────────────────────────────────────────
+
+    def _mapGrid(self, mapName):
+        """(tiles, widthTiles, heightTiles, walkThroughTiles), or None."""
+        info = self.tileData.get(mapName)
+        if info is None:
+            return None
+        return (info['tiles'], info['widthTiles'], info['heightTiles'],
+                self.walkableObjectTiles.get(mapName, set()))
+
+    def _walkableNeighbors(self, grid, tile, capabilities, extraGoals=()):
+        """Tiles enterable from ``tile`` in one step, with their tile types.
+
+        The single definition of a legal move, shared by A* and by
+        _reachableFrom so the two cannot disagree about a ledge - a second copy
+        of these rules would drift, and a router that models a one-way tile
+        differently from the search that walks it is the kind of bug that only
+        shows up as an unexplained "no route".
+
+        ``extraGoals`` lets A* step onto an interactable it is specifically
+        aiming at (an item, an NPC). Reachability passes none: you can face an
+        NPC but you cannot stand on one, so counting those tiles as reached
+        would let routes plan straight through them.
+        """
+        tiles, tw, th, passable = grid
+        col, row = tile
+        currentType = tiles[row][col]
+        for dName, (dc, dr) in DIRECTIONS.items():
+            nc, nr = col + dc, row + dr
+            if not (0 <= nc < tw and 0 <= nr < th):
+                continue
+            tileType = tiles[nr][nc]
+            enterable = (self._isWalkable(tileType, capabilities)
+                         or (nc, nr) in passable
+                         or ((nc, nr) in extraGoals
+                             and tileType in INTERACTABLE_TYPES))
+            if not enterable:
+                continue
+            # Ledge restrictions are a property of the tile being left.
+            if not self._canMoveDirection(currentType, dName):
+                continue
+            yield (nc, nr), tileType
+
+    def _reachableFrom(self, mapName, start, capabilities=None):
+        """Every tile actually gettable from ``start`` on one map.
+
+        Directed, not symmetric - see _walkableNeighbors. This is reachability,
+        not connectivity: a ledge you can drop down is not a ledge you can climb,
+        and a flood fill that ignored that would happily route the player back up
+        one.
+
+        Returns None for a map with no tile data, which callers read as "no
+        opinion" so an unpainted map keeps today's optimistic behaviour instead
+        of being declared unreachable.
+        """
+        key = (mapName, tuple(start), frozenset(capabilities or ()))
+        cached = self._reachCache.get(key)
+        if cached is not None:
+            return cached
+
+        grid = self._mapGrid(mapName)
+        if grid is None:
+            return None
+        _tiles, tw, th, _passable = grid
+        col, row = start
+        if not (0 <= col < tw and 0 <= row < th):
+            return frozenset()
+
+        seen = {tuple(start)}
+        queue = deque([tuple(start)])
+        while queue:
+            for nxt, _type in self._walkableNeighbors(grid, queue.popleft(),
+                                                      capabilities):
+                if nxt not in seen:
+                    seen.add(nxt)
+                    queue.append(nxt)
+
+        self._reachCache[key] = frozenset(seen)
+        return self._reachCache[key]
+
+    def _goalReachable(self, mapName, goals, reach):
+        """Whether any goal tile can be got to, given a reachable-tile set."""
+        if reach is None:            # unpainted map - no opinion, let it through
+            return True
+        goals = {tuple(g) for g in goals}
+        if not goals:
+            return True
+        if goals & reach:
+            return True
+        # An interactable goal is approached, not stood on, so it is never in
+        # `reach` itself; it counts as reached if we can stand next to it.
+        grid = self._mapGrid(mapName)
+        if grid is None:
+            return False
+        tiles, tw, th, _passable = grid
+        for col, row in goals:
+            if not (0 <= col < tw and 0 <= row < th):
+                continue
+            if tiles[row][col] not in INTERACTABLE_TYPES:
+                continue
+            if any((col + dc, row + dr) in reach for dc, dr in DIRECTIONS.values()):
+                return True
+        return False
 
     def _astarTiles(self, mapName, start, goal, capabilities=None):
         """
@@ -625,10 +772,8 @@ class Pathfinder:
             print(f"Pathfinder: No tile data for {mapName}, using direct path")
             return self._directPath(start, min(goals))
 
-        tiles = tileInfo['tiles']
-        tw = tileInfo['widthTiles']
-        th = tileInfo['heightTiles']
-        passable = self.walkableObjectTiles.get(mapName, set())  # landmark objects
+        grid = self._mapGrid(mapName)
+        _tiles, tw, th, _passable = grid
 
         startCol, startRow = start
         if not (0 <= startCol < tw and 0 <= startRow < th):
@@ -656,34 +801,14 @@ class Pathfinder:
             if current in goals:
                 return self._reconstructPath(cameFrom, current)
 
-            col, row = current
-            for dName, (dc, dr) in DIRECTIONS.items():
-                nc, nr = col + dc, row + dr
-
-                # Bounds check
-                if not (0 <= nc < tw and 0 <= nr < th):
-                    continue
-
-                # Check if tile is walkable (a goal may be reached even if it is
-                # an interactable; callers normally pass a walkable adjacent
-                # goal).
-                tileType = tiles[nr][nc]
-                isGoal = (nc, nr) in goals
-                walkable = (self._isWalkable(tileType, capabilities)
-                            or (nc, nr) in passable)
-                if not walkable and not (isGoal and tileType in INTERACTABLE_TYPES):
-                    continue
-
-                # Check ledge restrictions
-                currentType = tiles[row][col]
-                if not self._canMoveDirection(currentType, dName):
-                    continue
-
-                # Calculate movement cost
+            # Bounds, walkability, walk-through objects and ledges all live in
+            # _walkableNeighbors; `goals` is passed so an interactable target
+            # (an item, an NPC) can be stepped onto as the final move.
+            for neighbor, tileType in self._walkableNeighbors(
+                    grid, current, capabilities, extraGoals=goals):
                 moveCost = TILE_COSTS.get(tileType, 1.0)
                 tentativeG = gScore[current] + moveCost
 
-                neighbor = (nc, nr)
                 if tentativeG < gScore.get(neighbor, float('inf')):
                     cameFrom[neighbor] = current
                     gScore[neighbor] = tentativeG

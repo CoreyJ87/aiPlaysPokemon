@@ -34,11 +34,11 @@ class LocationTracker:
     PLAYER_OFFSET_X = PLAYER_TILE_X * TILE_SIZE       # 112
     PLAYER_OFFSET_Y = PLAYER_TILE_Y * TILE_SIZE       # 80
 
-    # The decompiled-ROM rips in maps/ are rendered *with* the in-game border,
-    # padded on every side by the half-screen the camera needs to keep drawing
-    # when the player stands at a map edge. So a map's own (0,0) sits at image
-    # tile (7, 5), and because RAM coordinates are map-relative, every RAM
-    # position needs this added to index the image.
+    # The interior rips in maps/ are rendered *with* the in-game border, padded
+    # on every side by the half-screen the camera needs to keep drawing when the
+    # player stands at a map edge. So such a map's own (0,0) sits at image tile
+    # (7, 5), and because RAM coordinates are map-relative, every RAM position
+    # needs this added to index the image.
     #
     # Both the padding and the player's screen position are the same half-screen
     # measurement, which is why one constant feeds both. Verified against the
@@ -46,6 +46,15 @@ class LocationTracker:
     # on the bottom) and against collision: in the player's bedroom, RAM (7,4)
     # has to resolve to (14,9), because from (14,9) a step left is the TV at
     # (13,9) while from (14,8) it is open floor.
+    #
+    # This is only a *default*. The overworld rips are framed differently - they
+    # carry the 2-tile border block and whatever strip of the connected map the
+    # ripper included, not a half-screen of padding - so on those it is simply
+    # wrong, and wrong by a different amount per map. 3-0-PalletTown is 24 tiles
+    # wide and the town proper is 20 of them, which leaves no room at all for a
+    # 7-column border. Those maps are big enough to template-match, so rather
+    # than measuring 40-odd rips by hand, measureOffset works the correction out
+    # from a screenshot and records it in mapOffsets.json.
     BORDER_OFFSET = (PLAYER_TILE_X, PLAYER_TILE_Y)
 
     # If the best neighbor match is below this, fall back to a full scan.
@@ -89,10 +98,15 @@ class LocationTracker:
         self._mapNameByBankNum = {}
         self._ambiguousIds = {}       # (bank, number) -> [conflicting names]
         self._undersizedWarned = set()
+        # Kept apart from _undersizedWarned: sharing one set meant whichever
+        # warning fired first silenced the other for that map forever.
+        self._ramDisagreeWarned = set()
         self._loadMapIds(connectionDataDir)
 
         # mapName -> (dx, dy) correcting RAM coords onto the image grid.
         self.mapOffsets = {}
+        self._mapOffsetsPath = None
+        self._mapOffsetsRaw = {}
         self._loadMapOffsets(connectionDataDir)
 
         self.currentMap = None
@@ -264,12 +278,12 @@ class LocationTracker:
         Optional; maps with no entry use BORDER_OFFSET, which is right for every
         rip rendered with the standard camera border.
         """
-        path = os.path.join(connectionDataDir, 'mapOffsets.json')
-        if not os.path.exists(path):
+        self._mapOffsetsPath = os.path.join(connectionDataDir, 'mapOffsets.json')
+        if not os.path.exists(self._mapOffsetsPath):
             return
-        with open(path, 'r') as f:
-            data = json.load(f)
-        for mapName, off in data.items():
+        with open(self._mapOffsetsPath, 'r') as f:
+            self._mapOffsetsRaw = json.load(f)
+        for mapName, off in self._mapOffsetsRaw.items():
             if mapName.startswith('_'):      # comment keys
                 continue
             if isinstance(off, (list, tuple)) and len(off) == 2:
@@ -277,6 +291,94 @@ class LocationTracker:
         if self.mapOffsets:
             print(f'LocationTracker: {len(self.mapOffsets)} map coordinate '
                   f'offset(s) loaded.')
+
+    def offsetFor(self, mapName):
+        """The RAM->image correction currently in force for a map."""
+        return self.mapOffsets.get(mapName, self.BORDER_OFFSET)
+
+    def isMatchable(self, mapName):
+        """Whether cv2.matchTemplate can be run against this map at all.
+
+        Purely a size guard - a rip smaller than the screen can't contain the
+        screenshot. Note that no rip currently is, so this excludes nothing: it
+        is emphatically *not* an "is this an interior" test, and callers must not
+        treat a True here as licence to trust the match. A small room's floor
+        repeats, which is exactly the texture that produces a confident match at
+        the wrong offset.
+        """
+        image = self.maps.get(mapName)
+        return (image is not None
+                and image.shape[0] >= self.SCREEN_HEIGHT
+                and image.shape[1] >= self.SCREEN_WIDTH)
+
+    def matchTile(self, screenshotPath, mapName):
+        """Where a screenshot puts the player on one *named* map.
+
+        Unlike locatePlayer this asks no question about identity - the caller
+        already knows which map it is - which is what makes it the primitive for
+        measuring a rip's offset: the answer owes nothing to RAM, so it can be
+        compared against RAM. Returns (tile, confidence), or None when the frame
+        is flat/unreadable, the map can't be matched, or the match is weak.
+        """
+        if not self.isMatchable(mapName):
+            return None
+        screenshot = cv2.imread(screenshotPath)
+        if screenshot is None:
+            return None
+        detail = float(cv2.cvtColor(screenshot, cv2.COLOR_BGR2GRAY).std())
+        if detail < self.MIN_SCREEN_STDDEV:
+            return None
+        best = self._matchAgainst(screenshot, [mapName])
+        if best is None or best[1] < self.MIN_CONFIDENCE:
+            return None
+        _name, confidence, location = best
+        tile = ((location[0] + self.PLAYER_OFFSET_X) // self.TILE_SIZE,
+                (location[1] + self.PLAYER_OFFSET_Y) // self.TILE_SIZE)
+        return tile, confidence
+
+    def measureOffset(self, mapName, tiles, gameState):
+        """Work out a map's true RAM->image offset from matched screenshots.
+
+        `tiles` are image tiles from matchTile on successive captures of the
+        same map. They must agree: the camera scrolls smoothly through a step,
+        so a single capture caught mid-walk lands a tile off, and one sample
+        can't tell that apart from a genuinely mis-framed rip. Two captures that
+        name the same tile mean the player was standing still, and then the gap
+        against RAM is the rip's framing and nothing else.
+
+        Returns the measured (dx, dy), or None if the samples don't agree or
+        there are no RAM coordinates to compare them with.
+        """
+        if not tiles or len(set(tuple(t) for t in tiles)) != 1:
+            return None
+        player = (gameState or {}).get('player', gameState or {})
+        x, y = player.get('x'), player.get('y')
+        if x is None or y is None:
+            return None
+        tile = tiles[0]
+        return (tile[0] - x, tile[1] - y)
+
+    def recordOffset(self, mapName, offset):
+        """Persist a measured offset to mapOffsets.json. True if it changed.
+
+        Writing it out rather than holding it in memory is the point: the
+        correction is a property of the rip, not of this session, so measuring
+        it once should fix the map for every later run and for the map editor.
+        """
+        offset = (int(offset[0]), int(offset[1]))
+        if self.offsetFor(mapName) == offset:
+            return False
+        previous = self.offsetFor(mapName)
+        self.mapOffsets[mapName] = offset
+        self._mapOffsetsRaw[mapName] = list(offset)
+        if self._mapOffsetsPath:
+            os.makedirs(os.path.dirname(self._mapOffsetsPath), exist_ok=True)
+            with open(self._mapOffsetsPath, 'w') as f:
+                json.dump(self._mapOffsetsRaw, f, indent=2, sort_keys=True)
+        print(f'LocationTracker: measured {mapName} offset {list(offset)} '
+              f'(was {list(previous)}) - imageTile = ram + offset. Recorded in '
+              f'mapOffsets.json.')
+        return True
 
     def locateFromState(self, gameState):
         """Fix the player from RAM alone - no screenshot, no template match.
@@ -354,11 +456,14 @@ class LocationTracker:
         # legitimately shows the previous tile. Only a larger, structural gap
         # means the image origin is actually misaligned with the game grid.
         drift = max(abs(tile[0] - ramTile[0]), abs(tile[1] - ramTile[1]))
-        if drift > 1 and mapName not in self._undersizedWarned:
-            self._undersizedWarned.add(mapName)
+        if drift > 1 and mapName not in self._ramDisagreeWarned:
+            self._ramDisagreeWarned.add(mapName)
+            current = self.offsetFor(mapName)
             print(f'LocationTracker: WARNING {mapName} template tile {tile} != '
-                  f'RAM tile {ramTile}. The map image origin looks offset from '
-                  f'the game grid; indoor RAM-based fixes on it will be wrong.')
+                  f'RAM tile {ramTile} under offset {list(current)}. The map '
+                  f'image origin is offset from the game grid; RAM-based fixes '
+                  f'on it will be wrong until it is remeasured (navigator does '
+                  f'that automatically, or use mapIdMapper.py --offset).')
 
     def _neighborCandidates(self):
         """Current map + its connection neighbors, in match-priority order."""

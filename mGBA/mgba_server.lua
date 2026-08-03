@@ -12,7 +12,18 @@
 --   SCREENSHOT            - Returns PNG bytes: OK|<byte_length>\n<raw PNG bytes>
 --   GAME_STATE            - Returns full game state as JSON: OK|<json>\n
 --   POSITION              - Returns just map/x/y/in_battle as JSON: OK|<json>\n
+--   SCREEN                - Returns UI/screen identity as JSON: OK|<json>\n
 --   PING                  - Returns OK\n (health check)
+--
+-- Memory inspection / address discovery commands:
+--   PEEK|<hex_addr>|<len>            - Hex dump of a memory range
+--   FIND|<hex_start>|<len>|<hexpat>  - Search a range for a byte pattern
+--   FINDTEXT|<hex_start>|<len>|<str> - Search for ASCII encoded as Gen3 text
+--   ENCODE|<str>                     - ASCII -> Gen3 bytes (as hex)
+--   SET_ADDR|<name>|<hex_addr>       - Register a discovered symbol at runtime
+--   ADDRS                            - List registered symbol addresses
+--   TASKS                            - Active gTasks fingerprint (needs gTasks)
+--   DIALOG                           - Current dialog text (needs gStringVar4)
 --
 -- POSITION exists because GAME_STATE is far too heavy to poll: it walks the
 -- whole party, five bag pockets and (in battle) both active battlers, while a
@@ -31,6 +42,18 @@
 --   battle: (in battle only) { player_active, enemy_active } from
 --           gBattleMons -- live modified stats, stat stages (-6..+6),
 --           current types/ability (handles Transform, Color Change, etc.)
+--
+-- SCREEN answers "what is on screen right now", which GAME_STATE cannot.
+-- It reads struct Main (gMain), whose layout is fully known:
+--   callback2 is the current screen's main callback -- a distinct ROM
+--   function pointer per screen (overworld, battle, bag, party menu,
+--   naming screen, Pokedex, ...). Label the pointers empirically once;
+--   they never change for a given ROM.
+--
+-- IMPORTANT: callback2 identifies SCREENS, not overlays. Dialog boxes and
+-- the START menu are tasks running under CB2_Overworld, so callback2 stays
+-- the same while they are open. Use TASKS (active gTasks func pointers) to
+-- tell those apart, and DIALOG for the message text itself.
 --
 -- Buttons: A, B, START, SELECT, UP, DOWN, LEFT, RIGHT, L, R
 --
@@ -54,6 +77,16 @@ local SCREENSHOT_DIR = os.getenv("TEMP") or os.getenv("TMP")
     or os.getenv("TMPDIR") or "."
 local SCREENSHOT_PATH = SCREENSHOT_DIR .. "/mgba_server_screenshot.png"
 local MAX_RECV_BYTES = 256        -- max bytes per read (commands are short)
+local MAX_PEEK_BYTES = 4096       -- max bytes per PEEK (response is hex, so 2x)
+
+---------------------------------------------------------------------------
+-- Logging
+---------------------------------------------------------------------------
+-- Defined up here because detectRomVersion() calls it during startup. As a
+-- local declared further down it would have resolved to a nil global there.
+local function log(msg)
+    console:log("[server] " .. msg)
+end
 
 ---------------------------------------------------------------------------
 -- Button name -> key constant mapping
@@ -99,7 +132,43 @@ GEN3_CHARS[0xAB] = "!"   GEN3_CHARS[0xAC] = "?"   GEN3_CHARS[0xAD] = "."
 GEN3_CHARS[0xAE] = "-"   GEN3_CHARS[0xB0] = "..." GEN3_CHARS[0xB1] = "\""
 GEN3_CHARS[0xB2] = "\""  GEN3_CHARS[0xB3] = "'"   GEN3_CHARS[0xB4] = "'"
 GEN3_CHARS[0xB5] = "M"   GEN3_CHARS[0xB6] = "F"   GEN3_CHARS[0xB8] = ","
-GEN3_CHARS[0xB9] = "x"   GEN3_CHARS[0xBA] = "/"   -- 0xFF = terminator
+GEN3_CHARS[0xB9] = "x"   GEN3_CHARS[0xBA] = "/"
+GEN3_CHARS[0xB7] = "$"   GEN3_CHARS[0xF0] = ":"
+
+-- Control codes, which only appear in dialog strings (never in names).
+-- Names terminate at 0xFF and contain nothing else; message text is full of
+-- these, so decoding it with the name reader yields "?" soup.
+local GEN3_TERMINATOR = 0xFF   -- end of string
+local GEN3_NEWLINE    = 0xFE   -- line break within the same box
+local GEN3_PLACEHOLDER = 0xFD  -- gStringVarN insertion point; +1 arg byte
+local GEN3_EXT_CTRL   = 0xFC   -- colour/font/delay control; +args
+local GEN3_PAGE_BREAK = 0xFB   -- wait for A, then clear the box
+local GEN3_SCROLL     = 0xFA   -- wait for A, then scroll up one line
+
+-- ASCII -> Gen 3, built by inverting GEN3_CHARS. Several Gen 3 codes decode
+-- to the same ASCII (0xB1/0xB2 both -> '"'), so we keep the LOWEST code for
+-- each character to make encoding deterministic. Multi-char decodes ("...")
+-- are skipped -- this table is for single-character lookups only.
+local GEN3_ENCODE = {}
+for code, ch in pairs(GEN3_CHARS) do
+    if #ch == 1 and (GEN3_ENCODE[ch] == nil or code < GEN3_ENCODE[ch]) then
+        GEN3_ENCODE[ch] = code
+    end
+end
+
+--- Encode an ASCII string to Gen 3 bytes. Returns (bytes, unmappedCount).
+--- Unmappable characters become 0x00 (space) so a search string stays the
+--- right length rather than silently shifting.
+local function encodeGen3(s)
+    local out, bad = {}, 0
+    for i = 1, #s do
+        local ch   = s:sub(i, i)
+        local code = GEN3_ENCODE[ch]
+        if not code then code = 0x00; bad = bad + 1 end
+        out[i] = string.char(code)
+    end
+    return table.concat(out), bad
+end
 
 -- Substructure order determined by PID % 24
 -- G=Growth, A=Attacks, E=EVs/Condition, M=Miscellaneous
@@ -177,6 +246,45 @@ local POKEMON_DATA_SIZE  = 100         -- bytes per Pokemon in party
 local RAM_GMAIN          = 0x030030F0  -- gMain struct (IWRAM)
 local GMAIN_IN_BATTLE_OFS = 0x439      -- byte holding the inBattle bitfield
 local GMAIN_IN_BATTLE_BIT = 1          -- inBattle is bit 1 of that byte
+
+-- Remaining struct Main offsets. These are not guesses: the 0x439 offset the
+-- inBattle bit lives at only lands where it does because oamBuffer[128] spans
+-- 0x038..0x437, which pins every field before it.
+--   0x000 callback1   0x004 callback2   0x008 savedCallback
+--   0x00C vblank      0x010 hblank      0x014 vcount    0x018 serial
+--   0x028 heldKeysRaw 0x02A newKeysRaw  0x02C heldKeys  0x02E newKeys
+--   0x030 newAndRepeatedKeys            0x032 keyRepeatCounter
+--   0x038 oamBuffer[128] (0x400 bytes)  0x438 state     0x439 bitfields
+local GMAIN_CALLBACK1_OFS = 0x000
+local GMAIN_CALLBACK2_OFS = 0x004
+local GMAIN_SAVED_CB_OFS  = 0x008
+local GMAIN_HELD_KEYS_OFS = 0x02C
+local GMAIN_NEW_KEYS_OFS  = 0x02E
+local GMAIN_STATE_OFS     = 0x438
+local GMAIN_OAM_DISABLED_BIT = 0        -- bit 0 of the 0x439 bitfield byte
+
+-- GBA memory regions, used to bound PEEK/FIND and to sanity-check pointers
+local EWRAM_START = 0x02000000
+local EWRAM_SIZE  = 0x40000    -- 256 KB
+local IWRAM_START = 0x03000000
+local IWRAM_SIZE  = 0x08000    -- 32 KB
+local ROM_START   = 0x08000000
+local ROM_END     = 0x09FFFFFF
+
+-- Key bits, for decoding gMain.heldKeys into names
+local KEY_BITS = {
+    { 0x0001, "A" },     { 0x0002, "B" },     { 0x0004, "SELECT" },
+    { 0x0008, "START" }, { 0x0010, "RIGHT" }, { 0x0020, "LEFT" },
+    { 0x0040, "UP" },    { 0x0080, "DOWN" },  { 0x0100, "R" },
+    { 0x0200, "L" },
+}
+
+-- gTasks layout (struct Task): func ptr, isActive flag, then s16 data[16].
+local TASK_STRUCT_SIZE = 0x28
+local TASK_COUNT       = 16
+local TASK_FUNC_OFS    = 0x00
+local TASK_ACTIVE_OFS  = 0x04
+local TASK_DATA_OFS    = 0x08
 local RAM_BATTLE_MONS    = 0x02023BE4  -- gBattleMons: active battlers' live data
 local BATTLE_MON_SIZE    = 0x58        -- bytes per BattlePokemon struct
                                        -- index 0 = player, 1 = opponent (singles)
@@ -309,6 +417,52 @@ local function readGen3String(addr, maxLen)
         chars[#chars + 1] = GEN3_CHARS[b] or "?"
     end
     return table.concat(chars)
+end
+
+--- Decode Gen 3 *message* text, which readGen3String cannot handle.
+---
+--- Names are plain characters terminated by 0xFF. Dialog is not: it carries
+--- line breaks, page breaks and formatting codes inline, so the name reader
+--- turns most of a message into "?" characters. This reader translates the
+--- structural codes into whitespace and reports where the message pauses for
+--- input, which is the part the AI player actually needs to know.
+---
+--- Returns (text, info) where info = { page_breaks, scrolls, placeholders }.
+---
+--- Caveat: 0xFC takes a variable number of parameter bytes depending on which
+--- control it introduces, and we only skip the code byte plus one parameter.
+--- The controls FR/LG uses in ordinary field dialog fit that shape; an exotic
+--- one would leak a stray character rather than desync the whole string.
+local function readGen3Text(addr, maxLen)
+    local chars = {}
+    local info  = { page_breaks = 0, scrolls = 0, placeholders = 0 }
+    local i = 0
+    while i < maxLen do
+        local b = emu:read8(addr + i)
+        if b == GEN3_TERMINATOR then
+            break
+        elseif b == GEN3_NEWLINE then
+            chars[#chars + 1] = "\n"
+        elseif b == GEN3_PAGE_BREAK then
+            chars[#chars + 1] = "\n"
+            info.page_breaks = info.page_breaks + 1
+        elseif b == GEN3_SCROLL then
+            chars[#chars + 1] = "\n"
+            info.scrolls = info.scrolls + 1
+        elseif b == GEN3_PLACEHOLDER then
+            -- Unsubstituted variable slot. In gStringVar4 these are normally
+            -- already expanded; seeing one means we are reading a template.
+            chars[#chars + 1] = "{VAR}"
+            info.placeholders = info.placeholders + 1
+            i = i + 1                      -- skip the buffer-id argument
+        elseif b == GEN3_EXT_CTRL then
+            i = i + 1                      -- skip control id (see caveat)
+        else
+            chars[#chars + 1] = GEN3_CHARS[b] or "?"
+        end
+        i = i + 1
+    end
+    return table.concat(chars), info
 end
 
 --- Read a Pokemon species name from ROM
@@ -688,13 +842,31 @@ local recvBuffers = {}         -- partial receive buffers per client
 -- Active button holds: list of { key=<int>, framesLeft=<int> }
 local activeHolds = {}
 
+-- Symbols located empirically (via PEEK/FIND) rather than hardcoded, and
+-- injected at runtime with SET_ADDR. Keeping them here instead of as
+-- constants means the discovery harness can nail them down without editing
+-- this file, and a wrong guess never silently poisons GAME_STATE.
+--
+-- Known names (nil until registered):
+--   gTasks       -- base of the 16-entry task array (IWRAM)
+--   gStringVar4  -- fully-expanded current dialog string (EWRAM)
+--   gStringVar1/2/3 -- substituted values inside that string
+--   gPaletteFade -- screen-transition state
+-- Note: a Lua table cannot hold nil values, so the registry starts empty and
+-- KNOWN_SYMBOLS is what defines the accepted names.
+local KNOWN_SYMBOLS = {
+    gTasks       = true,
+    gStringVar1  = true,
+    gStringVar2  = true,
+    gStringVar3  = true,
+    gStringVar4  = true,
+    gPaletteFade = true,
+}
+local discoveredAddrs = {}
+
 ---------------------------------------------------------------------------
 -- Helpers
 ---------------------------------------------------------------------------
-local function log(msg)
-    console:log("[server] " .. msg)
-end
-
 local function sendToClient(client, msg)
     local ok, err = client:send(msg)
     if not ok then
@@ -892,6 +1064,320 @@ local function handlePosition()
     return "OK|" .. toJSON(state) .. "\n"
 end
 
+---------------------------------------------------------------------------
+-- Memory inspection helpers
+---------------------------------------------------------------------------
+
+--- Parse a hex address, with or without an "0x" prefix.
+local function parseAddr(s)
+    if not s then return nil end
+    s = s:gsub("^0[xX]", "")
+    return tonumber(s, 16)
+end
+
+--- Bytes -> uppercase hex string
+local function toHexString(bytes)
+    return (bytes:gsub(".", function(c) return string.format("%02X", c:byte()) end))
+end
+
+--- "AABBCC" -> the raw 3-byte string. Returns nil on malformed input.
+local function parseHexBytes(s)
+    s = s:gsub("%s", "")
+    if #s == 0 or #s % 2 ~= 0 or s:find("[^0-9a-fA-F]") then return nil end
+    return (s:gsub("%x%x", function(pair)
+        return string.char(tonumber(pair, 16))
+    end))
+end
+
+--- True if [addr, addr+len) sits inside a region we can safely read.
+local function isReadable(addr, len)
+    if not addr or not len or len <= 0 then return false end
+    local last = addr + len - 1
+    if addr >= EWRAM_START and last < EWRAM_START + EWRAM_SIZE then return true end
+    if addr >= IWRAM_START and last < IWRAM_START + IWRAM_SIZE then return true end
+    if addr >= ROM_START   and last <= ROM_END                 then return true end
+    return false
+end
+
+--- True if a value looks like a pointer into ROM (i.e. a function address).
+local function isRomPointer(v)
+    return v >= ROM_START and v <= ROM_END
+end
+
+--- Search a memory range for a literal byte pattern.
+--- Reads in overlapping chunks so a match straddling a chunk boundary is
+--- still found; matches come back in ascending order, so comparing against
+--- the previous hit is enough to drop the duplicates that overlap creates.
+local function searchMemory(startAddr, length, pattern, maxResults)
+    local results = {}
+    local patLen  = #pattern
+    if patLen == 0 then return results end
+
+    local CHUNK  = 8192
+    local offset = 0
+    while offset < length do
+        local readLen = math.min(CHUNK + patLen - 1, length - offset)
+        if readLen < patLen then break end
+        local chunk = emu:readRange(startAddr + offset, readLen)
+        local idx = 1
+        while true do
+            local found = chunk:find(pattern, idx, true)
+            if not found then break end
+            local addr = startAddr + offset + found - 1
+            if results[#results] ~= addr then
+                results[#results + 1] = addr
+                if #results >= maxResults then return results end
+            end
+            idx = found + 1
+        end
+        offset = offset + CHUNK
+    end
+    return results
+end
+
+--- Decode gMain.heldKeys into button names.
+local function decodeKeys(mask)
+    local names = {}
+    for _, entry in ipairs(KEY_BITS) do
+        if (mask & entry[1]) ~= 0 then names[#names + 1] = entry[2] end
+    end
+    return names
+end
+
+--- Read the active-task fingerprint from gTasks, if its address is known.
+--- The set of active task function pointers identifies which UI overlays are
+--- running -- the message-box task, the START menu handler, the yes/no box --
+--- none of which change gMain.callback2.
+local function readTasks()
+    local base = discoveredAddrs.gTasks
+    if not base then return nil end
+
+    local tasks = {}
+    for i = 0, TASK_COUNT - 1 do
+        local slot = base + i * TASK_STRUCT_SIZE
+        if emu:read8(slot + TASK_ACTIVE_OFS) == 1 then
+            local func = emu:read32(slot + TASK_FUNC_OFS)
+            local data = {}
+            for d = 0, 15 do
+                local v = emu:read16(slot + TASK_DATA_OFS + d * 2)
+                if v >= 0x8000 then v = v - 0x10000 end   -- s16
+                data[d + 1] = v
+            end
+            tasks[#tasks + 1] = {
+                slot = i,
+                func = string.format("%08X", func),
+                data = data,
+            }
+        end
+    end
+    return tasks
+end
+
+--- Read the current dialog string from gStringVar4, if its address is known.
+local function readDialogText()
+    local addr = discoveredAddrs.gStringVar4
+    if not addr then return nil end
+    return readGen3Text(addr, 512)
+end
+
+---------------------------------------------------------------------------
+-- Screen / UI identity
+---------------------------------------------------------------------------
+
+--- What is on screen right now.
+--- callback2 is the authoritative screen id; everything else is context.
+--- Cheap enough to poll every frame if you want to.
+local function handleScreen()
+    if emu:platform() ~= C.PLATFORM.GBA then
+        return "ERR|SCREEN requires a GBA game\n"
+    end
+
+    local g        = RAM_GMAIN
+    local flagByte = emu:read8(g + GMAIN_IN_BATTLE_OFS)
+    local heldKeys = emu:read16(g + GMAIN_HELD_KEYS_OFS)
+
+    local state = {
+        callback1      = string.format("%08X", emu:read32(g + GMAIN_CALLBACK1_OFS)),
+        callback2      = string.format("%08X", emu:read32(g + GMAIN_CALLBACK2_OFS)),
+        saved_callback = string.format("%08X", emu:read32(g + GMAIN_SAVED_CB_OFS)),
+        main_state     = emu:read8(g + GMAIN_STATE_OFS),
+        in_battle      = ((flagByte >> GMAIN_IN_BATTLE_BIT) & 1) == 1,
+        oam_disabled   = ((flagByte >> GMAIN_OAM_DISABLED_BIT) & 1) == 1,
+        held_keys      = decodeKeys(heldKeys),
+        new_keys       = decodeKeys(emu:read16(g + GMAIN_NEW_KEYS_OFS)),
+    }
+
+    -- These light up once SET_ADDR has been told where the symbols live.
+    local tasks = readTasks()
+    if tasks then
+        state.tasks = tasks
+        local fingerprint = {}
+        for _, t in ipairs(tasks) do fingerprint[#fingerprint + 1] = t.func end
+        table.sort(fingerprint)
+        state.task_fingerprint = table.concat(fingerprint, ",")
+    end
+
+    local text = readDialogText()
+    if text then
+        state.dialog_text = text
+        state.dialog_active = #text > 0
+    end
+
+    return "OK|" .. toJSON(state) .. "\n"
+end
+
+--- Dialog text on its own, for callers that only want the message.
+local function handleDialog()
+    local addr = discoveredAddrs.gStringVar4
+    if not addr then
+        return "ERR|gStringVar4 address not registered -- use SET_ADDR|gStringVar4|<hex>\n"
+    end
+    local text, info = readDialogText()
+    local vars = {}
+    for i = 1, 3 do
+        local a = discoveredAddrs["gStringVar" .. i]
+        if a then vars["var" .. i] = readGen3String(a, 64) end
+    end
+    return "OK|" .. toJSON({
+        text         = text,
+        active       = #text > 0,
+        page_breaks  = info.page_breaks,
+        scrolls      = info.scrolls,
+        placeholders = info.placeholders,
+        vars         = next(vars) and vars or nil,
+    }) .. "\n"
+end
+
+--- Active task fingerprint on its own.
+local function handleTasks()
+    local tasks = readTasks()
+    if not tasks then
+        return "ERR|gTasks address not registered -- use SET_ADDR|gTasks|<hex>\n"
+    end
+    return "OK|" .. toJSON({ count = #tasks, tasks = tasks }) .. "\n"
+end
+
+---------------------------------------------------------------------------
+-- Address discovery commands
+---------------------------------------------------------------------------
+
+--- PEEK|<hex_addr>|<len> -> OK|<uppercase hex>
+local function handlePeek(args)
+    local addr = parseAddr(args[2])
+    local len  = tonumber(args[3]) or 16
+    if not addr then return "ERR|Bad address (expected hex)\n" end
+    if len < 1 then return "ERR|Length must be >= 1\n" end
+    if len > MAX_PEEK_BYTES then
+        return "ERR|Length exceeds max of " .. MAX_PEEK_BYTES .. "\n"
+    end
+    if not isReadable(addr, len) then
+        return "ERR|Range not in EWRAM/IWRAM/ROM\n"
+    end
+    return "OK|" .. toHexString(emu:readRange(addr, len)) .. "\n"
+end
+
+--- FIND|<hex_start>|<len>|<hex_pattern> -> OK|<json list of addresses>
+local function handleFind(args)
+    local startAddr = parseAddr(args[2])
+    local length    = tonumber(args[3])
+    local pattern   = args[4] and parseHexBytes(args[4]) or nil
+
+    if not startAddr then return "ERR|Bad start address (expected hex)\n" end
+    if not length or length < 1 then return "ERR|Bad length\n" end
+    if not pattern then return "ERR|Bad hex pattern\n" end
+    if not isReadable(startAddr, length) then
+        return "ERR|Range not in EWRAM/IWRAM/ROM\n"
+    end
+
+    local hits = searchMemory(startAddr, length, pattern, 64)
+    local out = {}
+    for i, addr in ipairs(hits) do out[i] = string.format("%08X", addr) end
+    return "OK|" .. toJSON({ count = #out, matches = out }) .. "\n"
+end
+
+--- FINDTEXT|<hex_start>|<len>|<ascii> -> same as FIND, but encodes the
+--- needle as Gen 3 text first. This is how you locate gStringVar4: trigger a
+--- dialog with distinctive wording, then search EWRAM for a phrase from it.
+local function handleFindText(args)
+    local startAddr = parseAddr(args[2])
+    local length    = tonumber(args[3])
+    local text      = args[4]
+
+    if not startAddr then return "ERR|Bad start address (expected hex)\n" end
+    if not length or length < 1 then return "ERR|Bad length\n" end
+    if not text or #text == 0 then return "ERR|Missing search text\n" end
+    if not isReadable(startAddr, length) then
+        return "ERR|Range not in EWRAM/IWRAM/ROM\n"
+    end
+
+    local pattern, unmapped = encodeGen3(text)
+    local hits = searchMemory(startAddr, length, pattern, 64)
+    local out = {}
+    for i, addr in ipairs(hits) do out[i] = string.format("%08X", addr) end
+    return "OK|" .. toJSON({
+        count    = #out,
+        matches  = out,
+        encoded  = toHexString(pattern),
+        unmapped = unmapped,   -- chars with no Gen 3 code; >0 means a loose match
+    }) .. "\n"
+end
+
+--- ENCODE|<ascii> -> OK|<hex>, for building FIND patterns by hand.
+local function handleEncode(args)
+    local text = args[2]
+    if not text or #text == 0 then return "ERR|Missing text\n" end
+    local bytes, unmapped = encodeGen3(text)
+    return "OK|" .. toJSON({
+        hex = toHexString(bytes), unmapped = unmapped,
+    }) .. "\n"
+end
+
+--- SET_ADDR|<name>|<hex_addr> -> register a discovered symbol.
+--- Pass an empty address to clear one.
+local function handleSetAddr(args)
+    local name = args[2]
+    if not name then return "ERR|Missing symbol name\n" end
+    if not KNOWN_SYMBOLS[name] then
+        return "ERR|Unknown symbol: " .. name .. "\n"
+    end
+
+    if not args[3] or args[3] == "-" then
+        discoveredAddrs[name] = nil
+        log("Cleared address for " .. name)
+        return "OK\n"
+    end
+
+    local addr = parseAddr(args[3])
+    if not addr then return "ERR|Bad address (expected hex)\n" end
+    if not isReadable(addr, 4) then
+        return "ERR|Address not in EWRAM/IWRAM/ROM\n"
+    end
+
+    discoveredAddrs[name] = addr
+    log(string.format("Registered %s = 0x%08X", name, addr))
+    return "OK\n"
+end
+
+--- ADDRS -> what is currently registered.
+local function handleAddrs()
+    local registered, missing = {}, {}
+    for name, _ in pairs(KNOWN_SYMBOLS) do
+        local addr = discoveredAddrs[name]
+        if addr then
+            registered[name] = string.format("%08X", addr)
+        else
+            missing[#missing + 1] = name
+        end
+    end
+    table.sort(missing)
+    return "OK|" .. toJSON({
+        -- The constants we already trust, so one call describes everything
+        gMain      = string.format("%08X", RAM_GMAIN),
+        registered = registered,
+        missing    = missing,
+    }) .. "\n"
+end
+
 local function processCommand(client, line)
     local args = splitString(line, "|")
     local cmd = args[1]:upper()
@@ -904,6 +1390,24 @@ local function processCommand(client, line)
         return handleGameState()
     elseif cmd == "POSITION" then
         return handlePosition()
+    elseif cmd == "SCREEN" then
+        return handleScreen()
+    elseif cmd == "DIALOG" then
+        return handleDialog()
+    elseif cmd == "TASKS" then
+        return handleTasks()
+    elseif cmd == "PEEK" then
+        return handlePeek(args)
+    elseif cmd == "FIND" then
+        return handleFind(args)
+    elseif cmd == "FINDTEXT" then
+        return handleFindText(args)
+    elseif cmd == "ENCODE" then
+        return handleEncode(args)
+    elseif cmd == "SET_ADDR" then
+        return handleSetAddr(args)
+    elseif cmd == "ADDRS" then
+        return handleAddrs()
     elseif cmd == "PING" then
         return handlePing()
     else
@@ -998,7 +1502,9 @@ local function startServer()
     end
 
     log("Listening on port " .. PORT)
-    log("Commands: TAP|<button>[|<frames>], SCREENSHOT, GAME_STATE, POSITION, PING")
+    log("Commands: TAP|<button>[|<frames>], SCREENSHOT, GAME_STATE, POSITION,")
+    log("          SCREEN, DIALOG, TASKS, PING")
+    log("Discovery: PEEK, FIND, FINDTEXT, ENCODE, SET_ADDR, ADDRS")
     log("Buttons: A, B, START, SELECT, UP, DOWN, LEFT, RIGHT" ..
         (keyMap.L and ", L, R" or ""))
 

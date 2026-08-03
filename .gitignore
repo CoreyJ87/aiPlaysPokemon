@@ -212,5 +212,12 @@ __marimo__/
 # track important mgba files
 !/mGBA/mgba_server.lua
 !/mGBA/mgba_client.py
+!/mGBA/discover.py
 !/mGBA/README.md
+
+# Discovered addresses and screen labels: worth tracking, since they cost a
+# manual session to rebuild. Memory snapshots are throwaway 288KB dumps.
+!/mGBA/addresses.json
+!/mGBA/screens.json
+/mGBA/.snapshots/
 

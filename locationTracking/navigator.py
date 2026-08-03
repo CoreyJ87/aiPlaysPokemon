@@ -80,6 +80,18 @@ STEP_SETTLE_POLLS = 24   # ~1.2s, enough for a door warp
 FADE_RETRIES = 8
 FADE_RETRY_DELAY = 0.15
 
+# Calibrating a map's RAM->image offset needs proof the camera is parked: two
+# captures far enough apart that a walk animation would have moved the view
+# between them, close enough that the pair costs a fraction of one step.
+OFFSET_SAMPLES = 2
+OFFSET_SAMPLE_DELAY = 0.08
+
+# Calibration wants a stationary player, and observe() is mostly called mid-walk
+# where captures disagree and it correctly declines. Retry on later observations
+# rather than giving up, but stop eventually so an unmatchable map doesn't pay
+# for two screenshots on every single step forever.
+OFFSET_ATTEMPT_LIMIT = 6
+
 
 class Navigator:
     def __init__(self, host='127.0.0.1', port=54321, connect=True,
@@ -102,6 +114,10 @@ class Navigator:
         self._lastMap = None
         self._lastTile = None
         self._wallWarned = set()
+        self._offsetAttempts = {}    # mapName -> calibration tries so far
+        self._offsetSamples = {}     # mapName -> {(ramX, ramY): (dx, dy)}
+        self._offsetProvisional = set()  # applied on one sample, still confirming
+        self._offsetChecked = set()  # maps that are measured, or can't be
         # Cleared if the server predates POSITION, or the injected client
         # doesn't implement it; either way we fall back to GAME_STATE.
         self._hasPosition = hasattr(self.client, 'position')
@@ -189,6 +205,11 @@ class Navigator:
             return None, state
 
         fix = self.tracker.locateFromState(state)
+        if fix is not None and self._calibrateOffset(fix['mapName'], state):
+            # The offset moved, so the tile we just derived was computed against
+            # the old one. Redo it - cheap, and it keeps the very first fix on a
+            # freshly measured map as correct as every later one.
+            fix = self.tracker.locateFromState(state) or fix
         if fix is None:
             fix = self._locateByImage(state)
         if fix:
@@ -197,6 +218,137 @@ class Navigator:
             self._trackWarp(fix['mapName'], tile)
             self._lastTile = tile
         return fix, state
+
+    def _calibrateOffset(self, mapName, state):
+        """Measure this map's RAM->image offset once, then never again.
+
+        The rips in maps/ are not framed alike: interiors carry the half-screen
+        camera border the code's default assumes, the overworld ones carry a
+        2-tile border block instead, so RAM coordinates land several tiles off on
+        every town and route. That is invisible to the RAM fast path - it is
+        internally consistent, just shifted - which is how a wrong tile survives
+        long enough to plan a route through a building.
+
+        Template matching is the independent witness: it reads the tile off the
+        pixels alone, so the gap against RAM is exactly the framing error. The
+        maps this is needed for are the outdoor ones, and those are the ones
+        large enough to match, so the check lands precisely where it works.
+
+        Returns True only when a new offset was recorded, meaning the caller's
+        already-computed tile is stale.
+        """
+        if mapName in self._offsetChecked:
+            return False
+        # An entry in mapOffsets.json was measured or set deliberately; leave it
+        # alone - unless it is one this run put there provisionally.
+        if (mapName in self.tracker.mapOffsets
+                and mapName not in self._offsetProvisional):
+            self._offsetChecked.add(mapName)
+            return False
+        if not self.tracker.isMatchable(mapName):
+            self._offsetChecked.add(mapName)
+            return False
+
+        attempts = self._offsetAttempts.get(mapName, 0) + 1
+        self._offsetAttempts[mapName] = attempts
+
+        ram = self._ramPos(state)
+        offset = self._sampleOffset(mapName, state) if ram else None
+        if offset is None:
+            self._giveUpOnOffset(mapName, attempts)
+            return False
+
+        # Corroboration, because one confident match is not one correct match.
+        # A room whose floor tiles repeat can match at the wrong offset, at full
+        # confidence, identically every time - and those interiors are precisely
+        # the maps the default already gets right, so a bad measurement here
+        # would break something that works. Two things can vouch for a sample:
+        samples = self._offsetSamples.setdefault(mapName, {})
+        samples[ram[2:]] = offset
+
+        # ...it held at a second, different player position. A map that doesn't
+        # really scroll under the player gives a fixed match location, so its
+        # apparent offset drifts as the player does; a real framing error can't.
+        # This is the one that settles the question.
+        if sum(1 for o in samples.values() if o == offset) >= 2:
+            self._offsetChecked.add(mapName)
+            self._offsetProvisional.discard(mapName)
+            changed = self.tracker.recordOffset(mapName, offset)
+            if changed:
+                print(f'navigator: {mapName} recalibrated - the same offset '
+                      f'measured at two different positions.')
+            return changed
+
+        # ...or it rescues us from a tile the player cannot possibly be standing
+        # on. Weaker evidence - it is one match, not two - but applied straight
+        # away regardless, because the alternative is worse: a wrong offset
+        # wedges the walk loop against a wall, and a player who can't move never
+        # reaches the second position the check above wants. Left provisional so
+        # a later sample can still overrule it.
+        if self._offsetFreesAWall(mapName, ram[2:], offset):
+            self._offsetProvisional.add(mapName)
+            changed = self.tracker.recordOffset(mapName, offset)
+            if changed:
+                print(f'navigator: {mapName} provisionally recalibrated - the '
+                      f'default had us standing inside a wall. Still confirming.')
+            # A map that keeps freeing a wall and never agrees with itself is
+            # one whose matches aren't trustworthy. Stop paying for captures.
+            self._giveUpOnOffset(mapName, attempts)
+            return changed
+
+        self._giveUpOnOffset(mapName, attempts)
+        return False
+
+    def _sampleOffset(self, mapName, state):
+        """One offset measurement, or None if the player isn't sitting still.
+
+        The camera scrolls smoothly through a step, so a capture caught mid-walk
+        names the tile being left rather than the one being entered - a one-tile
+        error indistinguishable from a mis-framed rip. Two captures a moment
+        apart that agree mean the view is parked and the reading is real.
+        """
+        tiles = []
+        for i in range(OFFSET_SAMPLES):
+            if i:
+                time.sleep(OFFSET_SAMPLE_DELAY)
+            match = self.tracker.matchTile(self._screenshot(), mapName)
+            if match is None:
+                return None
+            tiles.append(match[0])
+        return self.tracker.measureOffset(mapName, tiles, state)
+
+    def _offsetFreesAWall(self, mapName, ram, offset):
+        """True if `offset` moves us off an impossible tile onto a walkable one.
+
+        The player is never standing in a wall or off the edge of the map, so
+        when the current offset says otherwise it is the offset that's wrong.
+        """
+        info = self.pf.tileData.get(mapName)
+        if not info:
+            return False
+
+        def walkable(dx, dy):
+            col, row = ram[0] + dx, ram[1] + dy
+            if not (0 <= row < info['heightTiles'] and 0 <= col < info['widthTiles']):
+                return False
+            return info['tiles'][row][col] != BLOCKED
+
+        current = self.tracker.offsetFor(mapName)
+        return not walkable(*current) and walkable(*offset)
+
+    def _giveUpOnOffset(self, mapName, attempts):
+        """Stop paying for captures on a map that won't yield a measurement."""
+        if attempts < OFFSET_ATTEMPT_LIMIT:
+            return
+        self._offsetChecked.add(mapName)
+        held = 'unconfirmed ' if mapName in self._offsetProvisional else ''
+        self._offsetProvisional.discard(mapName)
+        print(f"navigator: could not confirm {mapName}'s coordinate offset in "
+              f"{attempts} tries - keeping the {held}value "
+              f"{list(self.tracker.offsetFor(mapName))}. If routing on it "
+              f"misbehaves, set it by hand with\n"
+              f"          python mapIdMapper.py --offset {mapName} "
+              f"<imageCol> <imageRow>")
 
     def _checkStandingOnWall(self, mapName, tile):
         """Warn if we believe we're standing inside a wall.

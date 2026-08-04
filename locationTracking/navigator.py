@@ -74,6 +74,23 @@ REROLL_LIMIT = 60
 SETTLE_DELAY = 0.05
 STEP_SETTLE_POLLS = 24   # ~1.2s, enough for a door warp
 
+# A planned path crosses maps by listing a tile on one map followed by a tile on
+# the next, and _pathToDirections emits nothing for that pair - it assumes that
+# arriving on the door tile is enough, which is true walking *into* a building
+# from the street and false almost everywhere else. Leaving a house needs one
+# more press Down into the doorway; a staircase landing needs a step onto the
+# steps; a route boundary needs the step across it. All three targets are marked
+# blocked or lie off the edge of the map image, so no path will ever contain
+# them, and without help the walk loop stands on the threshold replaying the
+# next map's directions on this one - which is what "it paces over the door and
+# never leaves" looks like from the outside.
+#
+# Rather than teach the planner about warp geometry it has no data for, the step
+# is discovered here: try the ways *into* the wall and keep the one where the
+# map id actually changes. One tap the next time we cross the same threshold.
+WARP_ENTRY_POLLS = 24
+WARP_SETTLE_POLLS = 20   # ~1s of "has the arrival animation finished yet"
+
 # A warp fade blanks the screen for longer than the step that triggered it, and
 # a flat frame is deliberately unmatchable, so give the fade time to clear
 # before concluding we've lost the player.
@@ -118,6 +135,7 @@ class Navigator:
         self._offsetSamples = {}     # mapName -> {(ramX, ramY): (dx, dy)}
         self._offsetProvisional = set()  # applied on one sample, still confirming
         self._offsetChecked = set()  # maps that are measured, or can't be
+        self._warpEntry = {}         # (map, tile) -> direction that crosses it
         # Cleared if the server predates POSITION, or the injected client
         # doesn't implement it; either way we fall back to GAME_STATE.
         self._hasPosition = hasattr(self.client, 'position')
@@ -497,6 +515,81 @@ class Navigator:
             self.facing = None
         return 'moved'
 
+    def _enterWarp(self, mapName, tile, targetMap):
+        """Step into the warp we're standing on. True once the map id changes.
+
+        The direction is unknown - the planner has no data on which way a door
+        faces - so this tries the ones that lead off the map or into a tile the
+        grid calls solid, which is where a warp always hides. Walking into a
+        wall costs nothing when it isn't one, and the RAM map id says plainly
+        whether it was.
+        """
+        before = self._ramPos()
+        if before is None:
+            return False
+
+        known = self._warpEntry.get((mapName, tile))
+        candidates = [known] if known else self._warpCandidates(mapName, tile)
+        for direction in candidates:
+            # Two taps, checked between: the first may only turn us to face the
+            # doorway (the same quirk _step works around), and the second is the
+            # step through it. A tap into a wall costs nothing when the guess is
+            # wrong, which is what makes trying directions viable at all.
+            for _attempt in range(2):
+                self._tap(direction)
+                self.facing = direction
+                after = self._awaitChange(before, WARP_ENTRY_POLLS)
+                if after is not None and after[:2] != before[:2]:
+                    if (mapName, tile) not in self._warpEntry:
+                        print(f'navigator: {mapName} {tile} -> {targetMap} '
+                              f'needs a {direction} press to trigger; '
+                              f'remembering that.')
+                    self._warpEntry[(mapName, tile)] = direction
+                    self._settleAfterWarp()
+                    self.facing = None   # the game picks our facing on arrival
+                    return True
+        return False
+
+    def _settleAfterWarp(self):
+        """Wait out the arrival before anything else presses a button.
+
+        The map id flips at the *start* of the transition, not the end: the
+        fade is still running, and coming off stairs or out of a door the game
+        walks the avatar clear of the threshold itself. Taps sent into that are
+        swallowed or land on the far side of it, which is how a walk that has
+        just gone downstairs turns around and goes straight back up.
+        """
+        last, stable = self._ramPos(), 0
+        for _ in range(WARP_SETTLE_POLLS):
+            time.sleep(SETTLE_DELAY)
+            pos = self._ramPos()
+            stable = stable + 1 if pos is not None and pos == last else 0
+            last = pos
+            if stable >= 2:
+                return
+
+    def _warpCandidates(self, mapName, tile):
+        """Directions worth trying to cross a threshold, most likely first.
+
+        Off the edge of the map first (route boundaries), then into solid tiles
+        (doorways and stair treads, both painted blocked because you can't
+        stand on them). A neighbouring tile you could simply walk onto is not a
+        warp, so it is never tried - stepping there would only wander us off
+        the threshold and undo the approach.
+        """
+        info = self.pf.tileData.get(mapName)
+        offGrid, solid = [], []
+        for direction, (dc, dr) in STEP_DELTA.items():
+            col, row = tile[0] + dc, tile[1] + dr
+            if info is None:
+                solid.append(direction)
+                continue
+            if not (0 <= row < info['heightTiles'] and 0 <= col < info['widthTiles']):
+                offGrid.append(direction)
+            elif info['tiles'][row][col] == BLOCKED:
+                solid.append(direction)
+        return offGrid + solid
+
     def _face(self, direction):
         """Turn to face `direction` without leaving the current tile.
 
@@ -702,6 +795,25 @@ class Navigator:
             plan = planFn(curMap, curTile, caps)
             if not plan['found']:
                 return self._result("no_route", description, steps, plan['reason'])
+
+            # Standing on a threshold: the next waypoint is on another map, and
+            # any directions after it belong to *that* map. Walking them here is
+            # the pacing bug - cross first, then re-observe and replan. This is
+            # checked before arrival, because a goal one tile the other side of
+            # a door leaves no directions at all, and reporting that as "we're
+            # there" is how the walk loop ends up parked on a doormat.
+            path = plan.get('path') or []
+            if len(path) >= 2 and path[1][0] != curMap:
+                if self._enterWarp(curMap, curTile, path[1][0]):
+                    steps += 1
+                    blocked = 0
+                    continue
+                return self._result(
+                    "stuck", description, steps,
+                    f"standing on {curMap} {curTile}, which the route says "
+                    f"opens onto {path[1][0]}, but no direction triggered the "
+                    f"change. The connection's tile is probably a step short of "
+                    f"the real doorway - check it in mapEditor.py.")
 
             if not plan['directions']:
                 # Arrived. Interact if the target requires it.

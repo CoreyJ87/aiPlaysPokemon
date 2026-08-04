@@ -1,0 +1,80 @@
+{
+  "game": "Pokemon Leaf Green",
+  "note": "Ordered walkthrough. `done` is checked against the live game state every turn and is what advances the player; `skip_if` is only read when working out where an existing save has got to, for objectives whose `done` is transient. See objectives.py for the condition language.",
+  "objectives": [
+    {
+      "id": "find-oak",
+      "title": "Walk north out of Pallet Town onto Route 1",
+      "detail": "You have no Pokemon yet, and Professor Oak is NOT in his lab - he is out in the tall grass on Route 1, north of town, and the game will not let the story move until you walk up there. Go downstairs, out of the house, north across Pallet Town and into Route 1. Oak stops you at the edge of the grass and walks you back to his lab himself. Do not walk to the lab: it is empty, and going there achieves nothing.",
+      "hint": "Step 1: `goto Pallet Town` to get outside. Step 2: `goto Route 1` to walk north. If neither is listed yet, `move up` until you are outside and keep heading north.",
+      "completion": "Oak has taken you to his lab (you are standing in it)",
+      "done": { "map": "4-3-PalletTown_ProfessorOaksLab" },
+      "skip_if": { "party": 1 },
+      "places": {
+        "hide": ["Professor Oak", "Oaks Lab", "bulbasaur", "charmander", "squritle"],
+        "reason": "Professor Oak and the three starter Pokemon are in the lab but are not available to you yet - Oak is out on Route 1 and nothing in the lab will respond until he brings you there himself. Walking to the lab now is a dead end. Head north instead."
+      }
+    },
+    {
+      "id": "pick-starter",
+      "title": "Choose your first Pokemon",
+      "detail": "Three starters are sitting on the table in Oak's lab. They appear in your destination list as items: bulbasaur, charmander and squritle. Walk to one and take it. Bulbasaur is the easiest start - it is Grass/Poison and the first two gyms are Rock and Water.",
+      "hint": "`goto bulbasaur` walks you to the table and picks it up.",
+      "completion": "you have at least one Pokemon",
+      "done": { "party": 1 }
+    },
+    {
+      "id": "get-parcel",
+      "title": "Fetch Oak's Parcel from the Viridian City Mart",
+      "detail": "Your rival will battle you on the way out of the lab - beat him. Then travel north through Route 1 to Viridian City and go into the Poke Mart. The clerk hands you a parcel for Professor Oak.",
+      "hint": "`goto Clerk` walks all the way to the Viridian Mart counter. Talk to him with `press a`.",
+      "completion": "you are carrying OAK'S PARCEL",
+      "done": { "has": "OAK'S PARCEL" },
+      "skip_if": { "any": [{ "has": "POKE BALL" }, { "has": "TOWN MAP" }, { "badges": 1 }] }
+    },
+    {
+      "id": "deliver-parcel",
+      "title": "Take the parcel back to Professor Oak",
+      "detail": "Walk back south to Pallet Town and give the parcel to Oak in his lab. He gives you the Pokedex and five Poke Balls in return.",
+      "hint": "`goto Professor Oak` routes you the whole way back. Talk to him with `press a` and clear the dialog.",
+      "completion": "the parcel is delivered and you are carrying Poke Balls",
+      "done": { "lacks": "OAK'S PARCEL", "has": "POKE BALL" },
+      "skip_if": { "any": [{ "has": "TOWN MAP" }, { "badges": 1 }] }
+    },
+    {
+      "id": "get-town-map",
+      "title": "Get the Town Map from your rival's house",
+      "detail": "Daisy, your rival's sister, is in the house next door in Pallet Town. Talk to her and she gives you the Town Map. That finishes the tutorial.",
+      "hint": "`goto town map` walks to the rival's house. Talk with `press a`.",
+      "completion": "you are carrying the TOWN MAP",
+      "done": { "has": "TOWN MAP" }
+    },
+    {
+      "id": "train-for-brock",
+      "title": "Train until you can beat Brock",
+      "detail": "Head north through Viridian City and Route 2 into Viridian Forest, and battle wild Pokemon until your team can handle the Pewter City gym. Brock uses Rock/Ground Pokemon: Grass and Water moves hit them four times as hard, and Normal moves barely scratch them. Catching a second Pokemon is worth the Poke Balls.",
+      "hint": "`catch <species>` walks to grass holding that species and paces until something appears. The readiness line below updates as you train.",
+      "trainer": "brock",
+      "completion": "the damage calculator says your party can beat Brock",
+      "done": { "ready_for": "brock" },
+      "skip_if": { "badges": 1 }
+    },
+    {
+      "id": "beat-brock",
+      "title": "Beat Brock and win the Boulder Badge",
+      "detail": "Go to Pewter City and into the gym on the west side of town. Beat Brock's GEODUDE and ONIX to earn the Boulder Badge, which is the first of eight.",
+      "hint": "Heal at the Pokemon Center first with `heal`, then `goto` the gym. In the fight, the calculator's pick is usually right.",
+      "trainer": "brock",
+      "completion": "you have 1 gym badge",
+      "done": { "badges": 1 }
+    },
+    {
+      "id": "head-to-mt-moon",
+      "title": "Cross Route 3 to Mt Moon",
+      "detail": "Leave Pewter City to the east along Route 3, past the trainers, to the Pokemon Center at the foot of Mt Moon, then go into the cave.",
+      "hint": "Route 3 is full of trainers. Heal before you set off, and check the readiness of your party as you go.",
+      "completion": "you are inside Mt Moon",
+      "done": { "map": ["1-1-MtMoon_1F", "1-2-MtMoon_B1F", "1-3-MtMoon_B2F"] }
+    }
+  ]
+}

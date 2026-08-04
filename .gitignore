@@ -221,3 +221,8 @@ __marimo__/
 !/mGBA/screens.json
 /mGBA/.snapshots/
 
+
+# The player's own memory: which objective it is on, and the notes it wrote.
+# Per-playthrough state, and it rebuilds itself from the save on the next run
+# (objectives.json and battle/trainers.json are the authored halves, tracked).
+/memories.json

@@ -1,0 +1,52 @@
+{
+  "brock": {
+    "name": "Leader BROCK",
+    "where": "Pewter City Gym",
+    "note": "Badge 1 (Boulder Badge). Rock/Ground - Grass and Water moves are 4x. ONIX has a huge DEF but a weak SpDEF, so special attacks go straight through it.",
+    "party": [
+      {
+        "species": "GEODUDE",
+        "nickname": "GEODUDE",
+        "level": 12,
+        "hp": 31,
+        "max_hp": 31,
+        "type1": "Rock",
+        "type2": "Ground",
+        "ability": "Rock Head",
+        "held_item": "None",
+        "status": "OK",
+        "attack": 24,
+        "defense": 29,
+        "sp_attack": 10,
+        "sp_defense": 12,
+        "speed": 9,
+        "moves": [
+          { "name": "TACKLE", "pp": 35 },
+          { "name": "DEFENSE CURL", "pp": 40 }
+        ]
+      },
+      {
+        "species": "ONIX",
+        "nickname": "ONIX",
+        "level": 14,
+        "hp": 33,
+        "max_hp": 33,
+        "type1": "Rock",
+        "type2": "Ground",
+        "ability": "Rock Head",
+        "held_item": "None",
+        "status": "OK",
+        "attack": 17,
+        "defense": 49,
+        "sp_attack": 11,
+        "sp_defense": 18,
+        "speed": 24,
+        "moves": [
+          { "name": "TACKLE", "pp": 35 },
+          { "name": "BIND", "pp": 20 },
+          { "name": "ROCK TOMB", "pp": 10 }
+        ]
+      }
+    ]
+  }
+}

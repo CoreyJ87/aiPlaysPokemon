@@ -40,6 +40,9 @@ from locationTracker import LocationTracker
 from pathfinder import (BLOCKED, Pathfinder, RETURN_TARGET,
                         WALK_THROUGH_OBJECT_CATEGORIES)
 
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+from screen_state import dialogBoxOpen  # noqa: E402
+
 # Reuse the existing mGBA client for the wire protocol.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'mGBA'))
 from mgba_client import MGBAClient, MGBAError, print_game_state  # noqa: E402
@@ -54,6 +57,21 @@ HM_CAPABILITIES = {
 
 # Consecutive blocked steps before we stop rather than burn the step budget.
 BLOCKED_LIMIT = 4
+
+# Presses allowed to talk a conversation out, and the pause between them. Mom
+# and the nurses run three or four pages around the healing animation, so a
+# dozen is slack; the cap is only there so a box that never closes can't press A
+# forever. The settle matters more than it looks: a press landing inside the
+# previous one's animation is swallowed, and a swallowed press reads as a page
+# that refused to turn.
+CONVERSE_PRESS_LIMIT = 14
+CONVERSE_SETTLE = 0.45
+# How long to let a box appear before believing there isn't one. A box that has
+# been asked for but not yet drawn looks exactly like no box at all, so a single
+# read taken straight after the A press that summoned it always says "closed" -
+# which declares the conversation over before it has started.
+CONVERSE_OPEN_POLLS = 4
+CONVERSE_OPEN_DELAY = 0.25
 
 # Steps to pace across encounter terrain before giving up on a wild appearing.
 # Gen 3 rolls for an encounter when a step *completes onto* an encounter tile -
@@ -73,6 +91,15 @@ REROLL_LIMIT = 60
 # normal walk - is settled by a single immediate read with no waiting at all.
 SETTLE_DELAY = 0.05
 STEP_SETTLE_POLLS = 24   # ~1.2s, enough for a door warp
+
+# How long the walk animation keeps running after RAM has committed to the
+# destination tile. Taps sent inside it are swallowed by the game, and a
+# swallowed tap is indistinguishable from a wall.
+#
+# Measured on this ROM by stepping back and forth along an empty stretch of
+# Route 1, 36 steps per interval: at 0.20s a third of the steps were still
+# being dropped, at 0.25s and beyond none were. 0.30 keeps a margin.
+STEP_ANIMATION = 0.30
 
 # A planned path crosses maps by listing a tile on one map followed by a tile on
 # the next, and _pathToDirections emits nothing for that pair - it assumes that
@@ -135,6 +162,8 @@ class Navigator:
         self._offsetSamples = {}     # mapName -> {(ramX, ramY): (dx, dy)}
         self._offsetProvisional = set()  # applied on one sample, still confirming
         self._offsetChecked = set()  # maps that are measured, or can't be
+        self._offsetTriedAt = {}     # mapName -> {(ramX, ramY)} already attempted
+        self._offsetGaveUpOn = set()  # maps we've already printed the advice for
         self._warpEntry = {}         # (map, tile) -> direction that crosses it
         # Cleared if the server predates POSITION, or the injected client
         # doesn't implement it; either way we fall back to GAME_STATE.
@@ -255,14 +284,45 @@ class Navigator:
         Returns True only when a new offset was recorded, meaning the caller's
         already-computed tile is stale.
         """
+        # "Checked" normally means checked for good. The exception is a map
+        # whose offset is provably wrong - one that puts the player somewhere
+        # they cannot be standing. Giving up there is what wedged Route 1: the
+        # player walks in at the southern edge, where the screen straddles two
+        # maps and nothing can be matched, so every attempt fails, the default
+        # (7, 5) lands them off the bottom of a 24x40 rip, and the map stays
+        # unusable for the rest of the run - no tile, no route, no destinations.
+        # A few steps north is all it takes to get a clean match, so the map
+        # earns another round of attempts whenever the player has moved.
         if mapName in self._offsetChecked:
-            return False
+            if not self._positionImpossible(mapName, state):
+                return False
+            here = self._ramPos(state)
+            if here is None or here[2:] in self._offsetTriedAt.get(mapName, ()):
+                return False
+            self._offsetChecked.discard(mapName)
+            self._offsetAttempts[mapName] = 0
         # An entry in mapOffsets.json was measured or set deliberately; leave it
         # alone - unless it is one this run put there provisionally.
         if (mapName in self.tracker.mapOffsets
                 and mapName not in self._offsetProvisional):
             self._offsetChecked.add(mapName)
             return False
+
+        # Free evidence before paid evidence. If we just walked across a seam,
+        # the connection graph already knows which tile that lands on - no
+        # screenshot, no match - and it knows it exactly where template matching
+        # is blind. Only when the offset in force is provably wrong, so a map
+        # that is working can never be disturbed by a one-sample guess.
+        if self._positionImpossible(mapName, state):
+            seam = self._offsetFromSeam(mapName, state)
+            if seam is not None and self.tracker.recordOffset(mapName, seam,
+                                                             persist=False):
+                self._offsetProvisional.add(mapName)
+                print(f'navigator: {mapName} offset {list(seam)} read off the '
+                      f'{self._lastMap} seam we just crossed - this session '
+                      f'only, until a screenshot agrees.')
+                return True
+
         if not self.tracker.isMatchable(mapName):
             self._offsetChecked.add(mapName)
             return False
@@ -271,6 +331,8 @@ class Navigator:
         self._offsetAttempts[mapName] = attempts
 
         ram = self._ramPos(state)
+        if ram is not None:
+            self._offsetTriedAt.setdefault(mapName, set()).add(ram[2:])
         offset = self._sampleOffset(mapName, state) if ram else None
         if offset is None:
             self._giveUpOnOffset(mapName, attempts)
@@ -301,14 +363,23 @@ class Navigator:
         # on. Weaker evidence - it is one match, not two - but applied straight
         # away regardless, because the alternative is worse: a wrong offset
         # wedges the walk loop against a wall, and a player who can't move never
-        # reaches the second position the check above wants. Left provisional so
-        # a later sample can still overrule it.
+        # reaches the second position the check above wants.
+        #
+        # Applied for this session only, never written to the file. One match on
+        # a small room is exactly the measurement not to trust - a repeating
+        # floor matches confidently at the wrong place - and "standing in a
+        # wall" is not always a wrong offset: during the opening cutscene the
+        # map id is live before the player's coordinates are, which puts them in
+        # the wall at (0,0) and invites a correction to a game that has not
+        # started. Written out, that guess would follow the save forever, one
+        # square off, walking into the furniture.
         if self._offsetFreesAWall(mapName, ram[2:], offset):
             self._offsetProvisional.add(mapName)
-            changed = self.tracker.recordOffset(mapName, offset)
+            changed = self.tracker.recordOffset(mapName, offset, persist=False)
             if changed:
-                print(f'navigator: {mapName} provisionally recalibrated - the '
-                      f'default had us standing inside a wall. Still confirming.')
+                print(f'navigator: {mapName} provisionally recalibrated for this '
+                      f'session - the default had us standing inside a wall. It '
+                      f'will not be saved unless a second position agrees.')
             # A map that keeps freeing a wall and never agrees with itself is
             # one whose matches aren't trustworthy. Stop paying for captures.
             self._giveUpOnOffset(mapName, attempts)
@@ -335,24 +406,85 @@ class Navigator:
             tiles.append(match[0])
         return self.tracker.measureOffset(mapName, tiles, state)
 
+    def _tilePossible(self, mapName, tile):
+        """Could the player be standing here? In bounds, and not inside a wall."""
+        info = self.pf.tileData.get(mapName)
+        if not info:
+            return True                  # no grid to contradict it
+        col, row = tile
+        if not (0 <= row < info['heightTiles'] and 0 <= col < info['widthTiles']):
+            return False
+        return info['tiles'][row][col] != BLOCKED
+
+    def _positionImpossible(self, mapName, state):
+        """Does the offset in force put the player somewhere they can't be?
+
+        Off the edge of the rip, or inside a wall. Either way the offset is
+        wrong - not suspect, wrong - because the game will not hand out a
+        position the player isn't standing on.
+        """
+        ram = self._ramPos(state)
+        if ram is None or mapName not in self.pf.tileData:
+            return False
+        dx, dy = self.tracker.offsetFor(mapName)
+        return not self._tilePossible(mapName, (ram[2] + dx, ram[3] + dy))
+
+    def _offsetFromSeam(self, mapName, state):
+        """The offset implied by the map edge we just walked across, or None.
+
+        A connection records the image tile on each side of a seam, so the tile
+        we are standing on now is known without looking at a single pixel - and
+        known precisely where template matching gives up, because at a boundary
+        the screen shows two maps at once and matches neither.
+
+        Edge connections are wide: `toTile` says where you land crossing at
+        `fromTile`, so crossing four tiles further along the seam lands four
+        tiles further along too. Carrying that sideways component across is the
+        difference between a measurement and an offset shifted by however far
+        off-centre we happened to be.
+        """
+        ram = self._ramPos(state)
+        if (ram is None or self._lastMap is None or self._lastTile is None
+                or self._lastMap == mapName):
+            return None
+        # An offset derived across a seam inherits the accuracy of the side we
+        # came from, so a map we were already lost on cannot vouch for the next.
+        if not self._tilePossible(self._lastMap, self._lastTile):
+            return None
+
+        for conn in self.pf.connections.get(self._lastMap, []):
+            if conn.get('toMap') != mapName or conn.get('type') != 'edge':
+                continue
+            fx, fy = conn['fromTile']
+            tx, ty = conn['toTile']
+            horizontal = conn.get('direction') in ('north', 'south')
+            # We have to have left from the seam itself. A crossing that
+            # happened mid-walk leaves _lastTile wherever the walk started, and
+            # a sideways drift into the boundary arrives somewhere this
+            # arithmetic does not predict.
+            if horizontal and self._lastTile[1] != fy:
+                continue
+            if not horizontal and self._lastTile[0] != fx:
+                continue
+            lateral = (self._lastTile[0] - fx if horizontal
+                       else self._lastTile[1] - fy)
+            landing = (tx + lateral, ty) if horizontal else (tx, ty + lateral)
+            return (landing[0] - ram[2], landing[1] - ram[3])
+        return None
+
     def _offsetFreesAWall(self, mapName, ram, offset):
         """True if `offset` moves us off an impossible tile onto a walkable one.
 
         The player is never standing in a wall or off the edge of the map, so
         when the current offset says otherwise it is the offset that's wrong.
         """
-        info = self.pf.tileData.get(mapName)
-        if not info:
+        if mapName not in self.pf.tileData:
             return False
 
-        def walkable(dx, dy):
-            col, row = ram[0] + dx, ram[1] + dy
-            if not (0 <= row < info['heightTiles'] and 0 <= col < info['widthTiles']):
-                return False
-            return info['tiles'][row][col] != BLOCKED
+        def standing(off):
+            return self._tilePossible(mapName, (ram[0] + off[0], ram[1] + off[1]))
 
-        current = self.tracker.offsetFor(mapName)
-        return not walkable(*current) and walkable(*offset)
+        return not standing(self.tracker.offsetFor(mapName)) and standing(offset)
 
     def _giveUpOnOffset(self, mapName, attempts):
         """Stop paying for captures on a map that won't yield a measurement."""
@@ -361,6 +493,11 @@ class Navigator:
         self._offsetChecked.add(mapName)
         held = 'unconfirmed ' if mapName in self._offsetProvisional else ''
         self._offsetProvisional.discard(mapName)
+        # Re-arming on a fresh position can bring us back here repeatedly, and
+        # the advice doesn't improve on being repeated.
+        if mapName in self._offsetGaveUpOn:
+            return
+        self._offsetGaveUpOn.add(mapName)
         print(f"navigator: could not confirm {mapName}'s coordinate offset in "
               f"{attempts} tries - keeping the {held}value "
               f"{list(self.tracker.offsetFor(mapName))}. If routing on it "
@@ -510,8 +647,21 @@ class Navigator:
         return pos if pos is not None else before
 
     def _moved(self, before, after):
+        # RAM commits to the destination as the walk *begins*, so we get here
+        # with the avatar still sliding between two tiles. Returning now hands
+        # the caller a green light to tap again mid-slide, where the tap is
+        # swallowed - and a swallowed tap looks exactly like a wall. That is how
+        # `move right 5` reports "walked 1, then hit something solid" in the
+        # middle of an empty road, every other step, anywhere on the map.
+        #
+        # Waiting here is not a cost. Without it every second step spends
+        # STEP_SETTLE_POLLS - a full second - proving a wall that was never
+        # there, which is four times longer than the wait it replaces.
+        time.sleep(STEP_ANIMATION)
         if after[:2] != before[:2]:
-            # Warped to another map - the game picks our facing, so forget ours.
+            # Crossed onto another map. The id flips at the start of the
+            # transition, and the game picks our facing on arrival.
+            self._settleAfterWarp()
             self.facing = None
         return 'moved'
 
@@ -625,9 +775,48 @@ class Navigator:
             f"go to {landmarkId}", maxSteps)
 
     def goHeal(self, maxSteps=400):
+        """Walk to the nearest healer, talk them through, and check it took.
+
+        Arriving is not the goal here any more than it is for `catch`. The A
+        press that _run does on arrival only *opens* the conversation - Mom and
+        the nurses take several pages around the healing itself - so a walk that
+        stopped there would report success having done nothing but say hello,
+        which is exactly what it used to do.
+        """
+        def onArrive(plan, mapName, tile, steps):
+            presses, ending = self._converse()
+            state = self._gameState()
+            party = (state or {}).get('party') or []
+            hurt = [p for p in party if p.get('hp', 0) < p.get('max_hp', 0)
+                    or p.get('status', 'OK') != 'OK']
+
+            if not party:
+                return self._result(
+                    "arrived", "heal at nearest Pokemon Center", steps,
+                    f"talked to the healer ({presses} press(es)) but couldn't "
+                    f"read the party back to check")
+            if not hurt:
+                return self._result(
+                    "healed", "heal at nearest Pokemon Center", steps,
+                    f"party is at full health ({len(party)} Pokemon)")
+
+            names = ", ".join(f"{p.get('nickname')} "
+                              f"{p.get('hp')}/{p.get('max_hp')}" for p in hurt)
+            if ending == 'battle':
+                reason = "a battle started before the healing finished"
+            elif ending == 'budget':
+                reason = (f"the conversation was still going after {presses} "
+                          f"A presses - press A yourself to finish it")
+            else:
+                reason = (f"the conversation ended after {presses} A press(es) "
+                          f"without healing - this healer may want an answer to "
+                          f"a question, or may not heal at all")
+            return self._result("not_healed", "heal at nearest Pokemon Center",
+                                steps, f"{reason}. Still hurt: {names}")
+
         return self._run(lambda m, t, caps: self.pf.planToObjectCategory(
             'pokemon_center', m, t, capabilities=caps, warpStack=self.warpStack),
-            "heal at nearest Pokemon Center", maxSteps)
+            "heal at nearest Pokemon Center", maxSteps, onArrive=onArrive)
 
     def goCatch(self, species, maxSteps=400, rerollLimit=REROLL_LIMIT):
         """Walk to where `species` lives, then pace until something appears.
@@ -817,18 +1006,30 @@ class Navigator:
 
             if not plan['directions']:
                 # Arrived. Interact if the target requires it.
+                pressed = False
                 if plan.get('interact'):
                     if not self._face(plan['interact']['face']):
                         # Turning knocked us off the approach tile and we
                         # couldn't get back (ledge?) - replan from where we are.
                         continue
                     self._tap(plan['interact'].get('press', 'A'))
+                    pressed = True
                     if plan['target'].get('map') == curMap:
                         self._markCollectedIfItem(plan)
                 if onArrive is not None:
                     outcome = onArrive(plan, curMap, curTile, steps)
                     if outcome is not None:
                         return outcome
+                # One press opens a conversation; it rarely finishes one. Saying
+                # only "reached target" invites the caller to treat talking to
+                # someone as done business and walk away mid-sentence - which is
+                # how a trip to the healer ended in a hello and nothing else.
+                if pressed:
+                    return self._result(
+                        "arrived", description, steps,
+                        "reached target and pressed A. If a text box opened, "
+                        "keep pressing A until it is gone - the conversation is "
+                        "not finished yet")
                 return self._result("arrived", description, steps, "reached target")
 
             # Take exactly one step, then let the next pass re-observe.
@@ -854,6 +1055,44 @@ class Navigator:
         t = plan['target']
         if t.get('tile'):
             self.collectedItems.add((t['map'], t['tile'][0], t['tile'][1]))
+
+    def _converse(self, budget=CONVERSE_PRESS_LIMIT):
+        """Press A until the text box that just opened is gone.
+
+        Returns (presses, ending), where ending is 'closed', 'battle' or
+        'budget'.
+
+        This is deliberately not what every interact target gets. Advancing text
+        is safe; what follows the text is not always text. A Poke Mart clerk's
+        first A opens a buy/sell menu, where more A presses start choosing items
+        and paying for them, and a healer who asks "shall I heal them?" wants an
+        answer, not a mash. So this belongs to the callers that know their NPC
+        only talks - and it stops the moment a battle starts, because a gym
+        leader's greeting ends in one.
+        """
+        presses = 0
+        while presses < budget:
+            state = self._positionState()
+            if state and state.get('in_battle'):
+                return presses, 'battle'
+            if not self._boxUp():
+                return presses, 'closed'
+            self._tap('A')
+            presses += 1
+            time.sleep(CONVERSE_SETTLE)
+        return presses, 'budget'
+
+    def _boxUp(self):
+        """Is there a text box on screen? Polled, because boxes take time to draw.
+
+        Waiting costs a second only on the read that ends a conversation, since
+        every other one finds its box on the first look.
+        """
+        for attempt in range(CONVERSE_OPEN_POLLS):
+            if dialogBoxOpen(self._screenshot()):
+                return True
+            time.sleep(CONVERSE_OPEN_DELAY)
+        return False
 
     def _result(self, status, description, steps, reason):
         return {"status": status, "goal": description, "steps": steps,

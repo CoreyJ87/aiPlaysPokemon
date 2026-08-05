@@ -358,26 +358,40 @@ class LocationTracker:
         tile = tiles[0]
         return (tile[0] - x, tile[1] - y)
 
-    def recordOffset(self, mapName, offset):
-        """Persist a measured offset to mapOffsets.json. True if it changed.
+    def recordOffset(self, mapName, offset, persist=True):
+        """Apply a measured offset. True if it changed.
 
-        Writing it out rather than holding it in memory is the point: the
-        correction is a property of the rip, not of this session, so measuring
-        it once should fix the map for every later run and for the map editor.
+        Writing it out rather than holding it in memory is usually the point:
+        the correction is a property of the rip, not of this session, so
+        measuring it once should fix the map for every later run and for the
+        map editor.
+
+        `persist=False` applies it for this session only, and exists because a
+        wrong offset written to disk is far worse than no offset at all: every
+        later run inherits it, the player's believed tile sits one square off
+        the real one, and the planner confidently routes them into furniture
+        that the grid says is empty. Only a corroborated measurement earns a
+        place in the file; a single-sample guess has to prove itself first.
         """
         offset = (int(offset[0]), int(offset[1]))
-        if self.offsetFor(mapName) == offset:
+        # "Already in force" is not the same as "already saved": a session-only
+        # offset applied earlier must not stop the corroborated measurement that
+        # confirms it from reaching the file.
+        inForce = self.offsetFor(mapName) == offset
+        onDisk = tuple(self._mapOffsetsRaw.get(mapName, ())) == offset
+        if inForce and (not persist or onDisk):
             return False
         previous = self.offsetFor(mapName)
         self.mapOffsets[mapName] = offset
-        self._mapOffsetsRaw[mapName] = list(offset)
-        if self._mapOffsetsPath:
-            os.makedirs(os.path.dirname(self._mapOffsetsPath), exist_ok=True)
-            with open(self._mapOffsetsPath, 'w') as f:
-                json.dump(self._mapOffsetsRaw, f, indent=2, sort_keys=True)
+        if persist:
+            self._mapOffsetsRaw[mapName] = list(offset)
+            if self._mapOffsetsPath:
+                os.makedirs(os.path.dirname(self._mapOffsetsPath), exist_ok=True)
+                with open(self._mapOffsetsPath, 'w') as f:
+                    json.dump(self._mapOffsetsRaw, f, indent=2, sort_keys=True)
+        where = 'Recorded in mapOffsets.json.' if persist else 'This session only.'
         print(f'LocationTracker: measured {mapName} offset {list(offset)} '
-              f'(was {list(previous)}) - imageTile = ram + offset. Recorded in '
-              f'mapOffsets.json.')
+              f'(was {list(previous)}) - imageTile = ram + offset. {where}')
         return True
 
     def locateFromState(self, gameState):

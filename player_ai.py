@@ -71,7 +71,7 @@ import ollama  # noqa: E402
 
 from mgba_client import BUTTONS, MGBAClient, MGBAError  # noqa: E402
 from navigator import Navigator  # noqa: E402
-from pathfinder import RETURN_TARGET  # noqa: E402
+from pathfinder import BLOCKED, RETURN_TARGET  # noqa: E402
 from damage_calc import GameData  # noqa: E402
 from live_calc import (  # noqa: E402
     Session,
@@ -93,6 +93,9 @@ from objectives import (  # noqa: E402
     ObjectiveBook,
     renderObjective,
 )
+from screen_state import measure as measureScreen  # noqa: E402
+from naming_screen import Keyboard, NamingError, currentName  # noqa: E402
+from naming_screen import isOpen as namingScreenOpen  # noqa: E402
 
 # Raw taps into a menu need a beat to land: the tap returns when its frames
 # elapse, but the menu redraws a few frames later, and a second tap fired into
@@ -168,6 +171,17 @@ class Config:
     # Doing the same thing this many times with the same result is the loop the
     # objectives are meant to break; say so in the prompt when it happens.
     repeatAlert: int = 3
+
+    # Text-box handling. Detection is a pixel heuristic, so it gets a trust
+    # window: after this many turns of claiming a box is open with nothing in
+    # the game changing, the harness stops acting on it and hands the walking
+    # commands back. A misread would otherwise wedge the player pressing A at
+    # scenery. The window is short because pressing A at a real box always
+    # changes something - it turns the page, or it closes the box and the player
+    # can move again - so several presses that change nothing at all is already
+    # strong evidence there is no box, not a conversation being slow.
+    detectDialog: bool = True
+    dialogTrustTurns: int = 3
     moveBudget: int = 300               # navigator step budget per goal
     parseRetries: int = 2               # re-asks before falling back
     turnDelay: float = 0.4              # pause between turns, seconds
@@ -314,6 +328,10 @@ COMMANDS = (
             "Ask the damage calculator whether your party could beat a trainer "
             "you have already met, and what to train.",
             aliases=("assess", "readiness", "scout")),
+    Command("name", "name <a short name>",
+            "Type a name on the keyboard screen and confirm it. Give a name of "
+            "1-10 letters; the harness presses the keys.",
+            aliases=("nickname", "call", "type"), context="naming"),
     Command("wait", "wait [seconds]",
             "Do nothing and let an animation or cutscene finish.",
             aliases=("idle", "nothing", "pass")),
@@ -376,6 +394,22 @@ class Actions:
             raise ActionError("that only works in battle")
         return obs
 
+    def _requireNoDialog(self):
+        """Refuse to walk while text is on screen, and say why.
+
+        The game would ignore the input anyway; the difference is that a
+        refusal explains itself in one turn, where being ignored looks exactly
+        like a blocked tile and gets retried until the step budget runs out.
+        """
+        obs = self.observation
+        if obs is not None and obs.namingOpen:
+            raise ActionError("a naming keyboard is on screen - answer with "
+                              "`name <what to call it>` first")
+        if obs is not None and obs.dialogOpen and not obs.dialogDoubted:
+            raise ActionError("there is a text box on screen - the game ignores "
+                              "movement until it is cleared. Press A to advance "
+                              "it first")
+
     # ---- overworld --------------------------------------------------------
 
     def press(self, args: list) -> str:
@@ -400,6 +434,7 @@ class Actions:
         return f"pressed {button}" + (f" x{times}" if times > 1 else "")
 
     def move(self, args: list) -> str:
+        self._requireNoDialog()
         if not args:
             raise ActionError("move needs a direction, e.g. `move up 3`")
         direction = DIR_ALIASES.get(args[0].lower())
@@ -431,6 +466,7 @@ class Actions:
         return f"Now on {fix['mapName']} at tile {tuple(fix['tile'])}."
 
     def goto(self, args: list) -> str:
+        self._requireNoDialog()
         if not args:
             raise ActionError("goto needs a place, e.g. `goto pokemon center`")
         name = " ".join(args)
@@ -477,9 +513,11 @@ class Actions:
         return self._describeRun(result)
 
     def heal(self, args: list) -> str:
+        self._requireNoDialog()
         return self._describeRun(self.nav.goHeal(maxSteps=self.cfg.moveBudget))
 
     def catch(self, args: list) -> str:
+        self._requireNoDialog()
         if not args:
             raise ActionError("catch needs a species, e.g. `catch pidgey`")
         known = [(s, s) for s in self.nav.species()]
@@ -491,6 +529,7 @@ class Actions:
                                                   maxSteps=self.cfg.moveBudget))
 
     def collect(self, args: list) -> str:
+        self._requireNoDialog()
         if not args:
             raise ActionError("collect needs an item name")
         known = [(k, k) for k in self.nav.pf.itemIndex]
@@ -606,6 +645,26 @@ class Actions:
                   if report["verdict"] != "ready" else None)
         return describeReadiness(report, entry.get("name") or trainerId, levels)
 
+    # ---- the naming keyboard ----------------------------------------------
+
+    def name(self, args: list) -> str:
+        """Hand a name to the keyboard driver, which types and confirms it."""
+        obs = self.observation
+        if obs is None or not obs.namingOpen:
+            raise ActionError("nothing is asking for a name right now")
+        wanted = " ".join(args).strip()
+        if not wanted:
+            raise ActionError("name needs the name to type, e.g. `name sprout`")
+        try:
+            result = Keyboard(self.client).enter(wanted)
+        except NamingError as exc:
+            raise ActionError(str(exc))
+        note = f" ({result['note']})" if result["note"] else ""
+        if not result["confirmed"]:
+            return (f"typed {result['name']!r}{note}, but the keyboard is still "
+                    f"open - check the screen and press A to accept it")
+        return f"named it {result['name']!r}{note} and confirmed"
+
     # ---- misc -------------------------------------------------------------
 
     def wait(self, args: list) -> str:
@@ -648,6 +707,12 @@ class Observation:
     hiddenPlaces: list = field(default_factory=list)   # patterns this objective hides
     hiddenReason: str = ""              # why, told to the model if it asks anyway
     hidden: int = 0                     # how many destinations were filtered out
+    namingOpen: bool = False            # the keyboard screen is asking for a name
+    namingSoFar: str = ""               # what is already typed into it
+    dialogOpen: bool = False            # a message box is covering the screen
+    dialogText: str = ""                # what it says, if gStringVar4 is known
+    dialogDoubted: bool = False         # asserted too long without anything moving
+    lostOnMap: bool = False             # our tile is one nobody could stand on
 
     # ---- rendering --------------------------------------------------------
 
@@ -657,6 +722,12 @@ class Observation:
             blocks.append(f"WHAT YOUR OPERATOR ASKED FOR: {cfg.goal}")
         if self.objectiveText:
             blocks.append(self.objectiveText)
+        # Before anything else about the world: if a box or a keyboard is up,
+        # none of the world matters this turn.
+        if self.namingOpen:
+            blocks.append(self._namingBlock())
+        elif self.dialogOpen:
+            blocks.append(self._dialogBlock())
         blocks.append(self._situation())
         if self.inBattle:
             blocks.append(self.battleReport)
@@ -667,7 +738,10 @@ class Observation:
             blocks.append(self._party())
         else:
             blocks.append(self._party())
-            if cfg.showDestinations:
+            # No point listing places to walk to in the same breath as
+            # refusing to walk - that is the contradiction the model would
+            # resolve by walking.
+            if cfg.showDestinations and not self._walkingBlocked():
                 blocks.append(self._places(cfg.destinationLimit))
         if self.note:
             blocks.append(f"NOTE: {self.note}")
@@ -675,6 +749,50 @@ class Observation:
             blocks.append(self._history(history, cfg.historyLength))
         blocks.append(self._commandHelp())
         return "\n\n".join(b for b in blocks if b)
+
+    def _walkingBlocked(self) -> bool:
+        return self.namingOpen or (self.dialogOpen and not self.dialogDoubted)
+
+    def _namingBlock(self) -> str:
+        lines = ["THE GAME IS ASKING YOU TO NAME SOMETHING.",
+                 "  An on-screen keyboard is up. Do NOT try to walk or to press "
+                 "letters one at a time - that is how a Pokemon ends up called "
+                 "FFFF."]
+        if self.namingSoFar:
+            lines.append(f'  Typed so far (it will be cleared first): '
+                         f'"{self.namingSoFar}"')
+        lines.append("  Answer with `name <what to call it>`, using 1-10 "
+                     "letters, and the keyboard will be typed and confirmed for "
+                     "you. A short, memorable name is best.")
+        return "\n".join(lines)
+
+    def _dialogBlock(self) -> str:
+        # Once the box is doubted this block has to change its story completely,
+        # not soften it. Saying "a box is open, you cannot walk" and then listing
+        # `goto` underneath leaves the model to pick which half to believe, and
+        # it picks the prose - which is how a misread costs a dozen turns.
+        if self.dialogDoubted:
+            return ("\n".join([
+                "THERE IS PROBABLY NO TEXT BOX ON SCREEN.",
+                "  Something down there looked like one, but pressing A has "
+                "changed nothing for several turns, so it was most likely "
+                "scenery. Stop pressing A.",
+                "  Treat this as an ordinary turn: walk, use `goto`, or explore. "
+                "Everything below is real."]))
+
+        lines = ["A TEXT BOX IS OPEN ON SCREEN."]
+        if self.dialogText:
+            flat = " ".join(self.dialogText.split())
+            lines.append(f'  It says: "{flat[:400]}"')
+            lines.append("  (That text is the last message the game wrote, which "
+                         "it keeps after a box closes - so it may be older than "
+                         "what is on screen.)")
+        lines.append("  While text is on screen the game ignores every button "
+                     "except A and B. You cannot walk anywhere, and no amount "
+                     "of moving will change that.")
+        lines.append("  Press A to advance the text. Long conversations take "
+                     "several presses; keep going until the box is gone.")
+        return "\n".join(lines)
 
     def _situation(self) -> str:
         p = self.state.get("player", {})
@@ -691,10 +809,10 @@ class Observation:
                      f"map id ({p.get('map_bank')}, {p.get('map_number')})")
         lines.append(f"  Money: ${p.get('money', 0):,}   Badges: {p.get('badges', 0)}")
 
-        dialog = (self.screen or {}).get("dialog_text", "")
-        if dialog and dialog.strip():
-            flat = " ".join(dialog.split())
-            lines.append(f"  Text on screen: \"{flat[:220]}\"")
+        # The message text deliberately isn't repeated here: gStringVar4 keeps
+        # the last thing said long after its box has closed, so quoting it
+        # unconditionally would put words on screen that aren't there. When a
+        # box really is up, the block above has already shown them.
         return "\n".join(lines)
 
     def _party(self) -> str:
@@ -717,6 +835,18 @@ class Observation:
         return "\n".join(lines)
 
     def _places(self, limit: int) -> str:
+        # A lost fix has to be named as one. "Nowhere is reachable" is a
+        # statement about the map; "I don't know where you are" is a statement
+        # about the harness, and only the second one suggests the fix, which is
+        # to walk a few tiles somewhere the map can be recognised from.
+        if self.lostOnMap:
+            return ("PLACES YOU CAN WALK TO\n"
+                    "  I have lost track of exactly where you are on this map, "
+                    "so I can't route you anywhere yet.\n"
+                    "  Use `move` a few tiles - away from doorways and the edge "
+                    "of the map - and it should sort itself out. `goto` will "
+                    "work again once it does.")
+
         reachable = [e for e in self.destinations if e["found"]]
         if not reachable:
             body = ("PLACES YOU CAN WALK TO\n  (none reachable from here - use "
@@ -746,7 +876,18 @@ class Observation:
         return "\n".join(lines)
 
     def _commandHelp(self) -> str:
-        context = "battle" if self.inBattle else "overworld"
+        # With a box up, the only legal context is the one every command shares
+        # ('any'), which leaves press/wait/note/check and takes walking off the
+        # menu entirely. Telling a model not to walk is weaker than not
+        # offering it - the same reason objectives hide misleading places.
+        if self.namingOpen:
+            context = "naming"
+        elif self.dialogOpen and not self.dialogDoubted:
+            context = "dialog"
+        elif self.inBattle:
+            context = "battle"
+        else:
+            context = "overworld"
         lines = ["COMMANDS YOU CAN USE RIGHT NOW"]
         for cmd in COMMANDS:
             if cmd.context in ("any", context):
@@ -970,6 +1111,8 @@ class PlayerAI:
         self.turn = int(self.memory.data.get("turns_played") or 0)
         self.history = []
         self._readinessCache = {}
+        self._dialogStreak = 0
+        self._dialogMarker = None
         # Set after a `use`, checked on the next observation: the battle cursor
         # trick is the one assumption in here the game could still surprise us
         # on, so it gets verified against the PP that actually moved.
@@ -1020,6 +1163,12 @@ class PlayerAI:
         obs = Observation(turn=self.turn, state=state, fix=None, screen=screen,
                           inBattle=inBattle,
                           screenshotPath=self.cfg.screenshotPath)
+        # The keyboard screen has its own callback2, so unlike a dialog it can
+        # be recognised outright rather than inferred from pixels.
+        obs.namingOpen = namingScreenOpen(screen)
+        if obs.namingOpen:
+            obs.namingSoFar = currentName(self.client) or ""
+        self._checkDialog(obs, state, screen, inBattle)
 
         # Objectives first: the current one decides which destinations are worth
         # showing, so it has to be settled before the survey is filtered.
@@ -1033,7 +1182,9 @@ class PlayerAI:
             # observe() is the navigator's own fix: RAM map id first, template
             # match only when that map isn't registered yet.
             obs.fix, _pos = self.nav.observe()
-            if obs.fix is not None and self.cfg.showDestinations:
+            obs.lostOnMap = self._lostOnMap(obs.fix)
+            if (obs.fix is not None and self.cfg.showDestinations
+                    and not obs._walkingBlocked()):
                 found = self.nav.nearby(fix=obs.fix, gameState=state)
                 found += self._exits(obs.fix, state, found)
                 found.sort(key=lambda e: (not e["found"],
@@ -1053,6 +1204,81 @@ class PlayerAI:
         obs.note = " ".join(n for n in (self._checkPendingMove(state, inBattle),
                                         self._repeatAlert()) if n)
         return obs
+
+    # ---- what is on screen ------------------------------------------------
+
+    def _checkDialog(self, obs: Observation, state: dict, screen: dict,
+                     inBattle: bool):
+        """Decide whether a message box is up, and how much to trust that.
+
+        Two sources, and neither is sufficient alone. The pixels say whether a
+        box is *drawn*; gStringVar4 says what the last message *was*, and keeps
+        saying it long after the box has closed - so the text is only reported
+        when the picture agrees there is something to read.
+
+        Battles are skipped: their own report already describes the screen, and
+        the split message/menu row down there doesn't look like a plain box.
+        """
+        if inBattle or obs.namingOpen or not self.cfg.detectDialog:
+            self._dialogStreak = 0
+            return
+
+        reading = measureScreen(str(self.cfg.screenshotPath))
+        obs.dialogOpen = reading["open"]
+        if not obs.dialogOpen:
+            self._dialogStreak = 0
+            return
+
+        obs.dialogText = (screen or {}).get("dialog_text", "") or ""
+
+        # The trust window. A conversation that is going somewhere redraws its
+        # box on every press, and ends by letting the player move again. If
+        # neither the box nor the player has changed after several presses, the
+        # harness is probably arguing with a wall - so it stops insisting.
+        #
+        # Only turns that actually pressed A or B count towards that. A box that
+        # sits unchanged while the model writes notes has not failed to advance;
+        # it has not been asked to, and holding it against the box would doubt a
+        # real conversation for the crime of being talked over.
+        marker = (reading["fingerprint"], self._ramSignature(state))
+        if marker != getattr(self, "_dialogMarker", None):
+            self._dialogStreak = 0
+            self._dialogMarker = marker
+        elif self._lastActionWasAdvance():
+            self._dialogStreak += 1
+        obs.dialogDoubted = self._dialogStreak > self.cfg.dialogTrustTurns
+
+    def _lastActionWasAdvance(self) -> bool:
+        """Did last turn press one of the two buttons a text box listens to?"""
+        if not self.history:
+            return False
+        parts = str(self.history[-1].get("action", "")).lower().split()
+        return len(parts) >= 2 and parts[0] == "press" and parts[1] in ("a", "b")
+
+    def _lostOnMap(self, fix) -> bool:
+        """Is the tile we think we're on one the player could not be standing on?
+
+        Off the edge of the map rip, or inside a wall. Both mean the same thing:
+        the RAM->image offset for this map is wrong, so every tile the planner
+        reasons about is displaced. Routing quietly stops working - `nearby`
+        finds nothing walkable, `goto` has nowhere to start - and from the
+        outside that is indistinguishable from standing in a dead end, which is
+        a thing a model will happily accept and keep pressing buttons about.
+        """
+        if fix is None:
+            return False
+        info = self.nav.pf.tileData.get(fix["mapName"])
+        if not info:
+            return False
+        col, row = fix["tile"]
+        if not (0 <= row < info["heightTiles"] and 0 <= col < info["widthTiles"]):
+            return True
+        return info["tiles"][row][col] == BLOCKED
+
+    @staticmethod
+    def _ramSignature(state: dict) -> tuple:
+        p = state.get("player", {}) or {}
+        return (p.get("map_bank"), p.get("map_number"), p.get("x"), p.get("y"))
 
     # ---- destinations -----------------------------------------------------
 
@@ -1300,6 +1526,10 @@ class PlayerAI:
         advance the text; anywhere else, do nothing rather than press a button
         we didn't choose.
         """
+        if obs.namingOpen:
+            # Never a blind A here: on the keyboard screen the cursor may be
+            # sitting on OK, and pressing it accepts whatever is typed.
+            return "wait", ["1"]
         if not obs.inBattle and obs.fix is None:
             return "press", ["a"]
         return "wait", ["1"]
@@ -1328,10 +1558,15 @@ class PlayerAI:
 
     def run(self, maxTurns: int | None = None):
         print("\nPlaying. Ctrl-C to stop.")
+        # Counted for this run, not since the save began: self.turn continues
+        # across restarts so the objective clock survives them, which would
+        # make `--turns 3` mean "stop at turn 3, i.e. immediately".
+        taken = 0
         try:
-            while maxTurns is None or self.turn < maxTurns:
+            while maxTurns is None or taken < maxTurns:
                 try:
                     self.step()
+                    taken += 1
                 except (MGBAError, ValueError) as exc:
                     print(f"Turn failed: {exc}")
                 except ConnectionError as exc:
@@ -1343,7 +1578,7 @@ class PlayerAI:
                 time.sleep(self.cfg.turnDelay)
         except KeyboardInterrupt:
             print("\nStopped.")
-        print(f"Played {self.turn} turn(s).")
+        print(f"Played {taken} turn(s) this run ({self.turn} on this save).")
 
     def dryRun(self):
         """One turn that asks the model and prints its choice, executing nothing."""

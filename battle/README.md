@@ -8,21 +8,18 @@ Like with [location tracking](../locationTracking/README.md), the original goal 
 
 Getting the data from the game state of the emulator actually solves a lot of problems down the line, since the game knows not only if we are fighting and if so what monster, but also all of the opponents stats.  This gives us a very accurate damage calculation, which is about the only win we get.  Movesets in the early Pokemon games were not great, esspically for your starters.  Most really powerful moves are gated behind a TM, and as of a week before DEFCON, I plan to leave item management to the AI as a hopefully ammusing comparision to all of the tools being designed for the rest of the game.  So who knows if anything will ever learn hyper beam.  As such, we actually need the battle AI to be pretty smart, and able to plan around the use of status effect moves in addtion to damaging ones.
 
-## Am I Strong Enough Yet?
+## Damage Calculation
 
-The damage calculator answers "what does this move do right now", which is the wrong question when you are standing outside a gym.  [matchup.py](./matchup.py) answers the one the player actually asks - *should I go in, or should I train first?* - by running the calculator over every pairing of your party against a stored enemy team.
+There are a lot of Pokemon damage calculators tailored made for everything from nuzlocks to competitive play.  However, because the goal of this project was to run live at DEFCON, where WiFi is fickle at best, I wanted to make sure the AI player had their own local damage calculator to use.  For this initial pass it's just doing the basics of how many turns will it take for move X to knock out Y, vs how soon can they knock out your own pokemon.  Eventually I want to better represent stalling tactics, like starting a long fight with leech seed to recover HP over multiple turns, or using sleep powder to stall a stronger opponent, but that will likely happen after the conference.  
 
-It asks two different questions, because they have different answers.  **Coverage** is per Pokemon: for each of theirs, does anything of yours beat it one-on-one?  That is the question that matters if you are happy to switch.  **Sweep** is the harder one: can a single Pokemon walk through the whole team without fainting?  Their Pokemon are restored between fights and yours is not, which is exactly what makes a gym harder than its hardest individual Pokemon.  Both are decided on expected damage per turn (accuracy- and crit-weighted), turned into turns-to-KO, with speed breaking the tie.
 
-Nothing in there is a simulation of the real fight.  It assumes the best move every turn, no items, no status luck and no switching mid-fight, which makes it a deliberate *under*estimate of a competent player - so a `ready` verdict means ready.  When the verdict is not ready it also estimates how many levels of training would fix it, by scaling stats with the Gen III stat formula.  That estimate cannot see moves learned on the way up, which matters more than it sounds: a Lv7 BULBASAUR genuinely cannot beat Brock, right up until it learns VINE WHIP at Lv13 and hits for 4x.
+### Damage Formula
 
-Enemy teams live in [trainers.json](./trainers.json), stored in exactly the shape `GAME_STATE` reports a Pokemon, so recording a new one is a copy rather than a transcription:
+TODO:  Grab the Gen III Damage calc and explain it here along with how we get stuff from game state
 
-```
-python battle/matchup.py capture brock --name "Leader BROCK" --where "Pewter City Gym"
-python battle/matchup.py brock             # assess your live party
-python battle/matchup.py brock --level 18  # what-if, at a higher level
-python battle/matchup.py list
-```
+## Battle Planning
 
-This is also what makes "train until you are strong enough" a checkable objective rather than a vibe - see [objectives.py](../objectives.py), where a `ready_for` condition asks this module and advances the player when it says yes.  
+The other nice thing about having the calculator as a local script is we can build around it for being able to tell the player AI when they are actually strong enough to likely win against the next gym battle or other important encounter.  [Trainers.json](./trainers.json) has a list of pulled trainers from the game that represent key encounters, while [matchup](./matchup.py) handles calculating how good or bad the current players team does against these extracted encounters.  This then gives us a way to inform the player AI that they need to go train more by either fighting trainers or wild pokemon.  
+
+One thing we don't do that I would eventually like to is to have this toolset also recommend moves when a pokemon learns a new move or gains a new TM.  But that's pretty far off for now.  
+

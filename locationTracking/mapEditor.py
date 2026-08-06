@@ -49,6 +49,7 @@ from tkinter import ttk, filedialog, messagebox, simpledialog
 from PIL import Image, ImageTk, ImageDraw
 import json
 import os
+import re
 import sys
 
 # Encounter terrain is derived from the painted grid, not stored. Share the
@@ -360,6 +361,15 @@ class TargetPicker:
             self.statusLabel.config(text=f"Tile ({col}, {row})  on {self.mapName}")
 
 
+def _naturalKey(name):
+    """
+    Sort key that compares digit runs numerically instead of as text, so map
+    names like "3-2-Foo" come before "3-10-Bar" rather than after it.
+    """
+    return [int(part) if part.isdigit() else part.lower()
+            for part in re.split(r'(\d+)', name)]
+
+
 def _imageFileFor(mapsDir, mapName):
     """Return the image filename for a map name (handles .png/.jpg/etc.)."""
     for ext in IMAGE_EXTENSIONS:
@@ -445,8 +455,9 @@ class MapEditor:
         elif mapsDir and not imagePath:
             exts = IMAGE_EXTENSIONS
             self.batchFiles = sorted(
-                os.path.join(self.mapsDir, f) for f in os.listdir(self.mapsDir)
-                if f.lower().endswith(exts) and os.path.isfile(os.path.join(self.mapsDir, f)))
+                (os.path.join(self.mapsDir, f) for f in os.listdir(self.mapsDir)
+                 if f.lower().endswith(exts) and os.path.isfile(os.path.join(self.mapsDir, f))),
+                key=_naturalKey)
             if self.batchFiles:
                 self._loadMap(self.batchFiles[0])
         else:
@@ -491,7 +502,8 @@ class MapEditor:
                  font=('monospace', 10)).pack(side=tk.LEFT)
         self.mapVar = tk.StringVar()
         self.mapSelector = ttk.Combobox(toolbar, textvariable=self.mapVar, width=42,
-                                        values=sorted(self.mapMeta.keys()), state='readonly')
+                                        values=sorted(self.mapMeta.keys(), key=_naturalKey),
+                                        state='readonly')
         self.mapSelector.pack(side=tk.LEFT, padx=4)
         self.mapSelector.bind('<<ComboboxSelected>>',
                               lambda e: self._loadMapByName(self.mapVar.get()))
@@ -623,7 +635,8 @@ class MapEditor:
         rowLabel(2, "To Map:")
         self.toMapVar = tk.StringVar()
         toMapCombo = ttk.Combobox(form, textvariable=self.toMapVar, width=26,
-                                  values=sorted(self.mapMeta.keys()) + [RETURN_TARGET])
+                                  values=sorted(self.mapMeta.keys(), key=_naturalKey)
+                                         + [RETURN_TARGET])
         toMapCombo.grid(row=2, column=1, sticky='w', padx=4)
         toMapCombo.bind('<<ComboboxSelected>>', self._onToMapChosen)
 
@@ -1393,7 +1406,7 @@ class MapEditor:
     # ── filter ───────────────────────────────────────────────────────────────
     def _onFilter(self, *args):
         text = self.filterVar.get().lower()
-        self.mapSelector['values'] = [n for n in sorted(self.mapMeta.keys())
+        self.mapSelector['values'] = [n for n in sorted(self.mapMeta.keys(), key=_naturalKey)
                                       if text in n.lower()]
 
     # ── saving ───────────────────────────────────────────────────────────────

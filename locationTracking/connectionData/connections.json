@@ -887,6 +887,90 @@
           ]
         }
       ]
+    },
+    "3-21-Route3": {
+      "imageFile": "3-21-Route3.png",
+      "widthTiles": 84,
+      "heightTiles": 20,
+      "connections": [
+        {
+          "type": "edge",
+          "fromTile": [
+            0,
+            9
+          ],
+          "toMap": "3-2-PewterCity",
+          "toTile": [
+            47,
+            20
+          ],
+          "direction": "west",
+          "width": 4
+        },
+        {
+          "type": "edge",
+          "fromTile": [
+            68,
+            0
+          ],
+          "toMap": "3-22-Route4",
+          "toTile": [
+            8,
+            19
+          ],
+          "direction": "north",
+          "width": 8
+        }
+      ]
+    },
+    "3-22-Route4": {
+      "imageFile": "3-22-Route4.png",
+      "widthTiles": 108,
+      "heightTiles": 20,
+      "connections": [
+        {
+          "type": "edge",
+          "fromTile": [
+            8,
+            19
+          ],
+          "toMap": "3-21-Route3",
+          "toTile": [
+            68,
+            0
+          ],
+          "direction": "south",
+          "width": 8
+        },
+        {
+          "type": "edge",
+          "fromTile": [
+            107,
+            10
+          ],
+          "toMap": "3-3-CeruleanCity",
+          "toTile": [
+            0,
+            20
+          ],
+          "direction": "east",
+          "width": 3
+        },
+        {
+          "type": "edge",
+          "fromTile": [
+            107,
+            3
+          ],
+          "toMap": "3-3-CeruleanCity",
+          "toTile": [
+            0,
+            13
+          ],
+          "direction": "east",
+          "width": 2
+        }
+      ]
     }
   },
   "landmarks": {},

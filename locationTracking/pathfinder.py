@@ -117,6 +117,12 @@ TILE_COSTS = {
     DOOR: 1.0,
     WARP: 1.0,
     UNKNOWN: 3.0,          # prefer known tiles
+    # A hop is really one button press for two tiles, so 1.0 each overcharges
+    # it.  Pricing it honestly (0.5, or 0.0 for the ledge itself) would break
+    # the Manhattan heuristic in _searchTiles, which is admissible only while
+    # every move costs at least 1.0 - and an inadmissible heuristic returns
+    # quietly suboptimal routes.  A ledge still beats walking around it by a
+    # wide margin at 1.0, so the search stays correct and the detour still dies.
     LEDGE_DOWN: 1.0,       # one-way but cheap
     LEDGE_LEFT: 1.0,
     LEDGE_RIGHT: 1.0,
@@ -132,17 +138,22 @@ DIRECTIONS = {
 
 OPPOSITE_DIRECTION = {'Up': 'Down', 'Down': 'Up', 'Left': 'Right', 'Right': 'Left'}
 
+# The one direction each ledge type can be crossed in.  A ledge is the *only*
+# tile type with a rule on both sides of the step: you may enter it only from
+# the direction it hops (walking sideways onto a ledge is blocked in-game), and
+# once on it you may only continue that same way.  Entry lives in
+# _walkableNeighbors, exit in canMoveDirection - both read this table.
+LEDGE_HOP_DIRECTION = {
+    LEDGE_DOWN: 'Down',
+    LEDGE_LEFT: 'Left',
+    LEDGE_RIGHT: 'Right',
+}
+
 
 def canMoveDirection(currentTileType, direction):
     """Whether a step in `direction` is legal *from* a tile of this type."""
-    # Ledges only allow movement in one direction
-    if currentTileType == LEDGE_DOWN:
-        return direction == 'Down'
-    if currentTileType == LEDGE_LEFT:
-        return direction == 'Left'
-    if currentTileType == LEDGE_RIGHT:
-        return direction == 'Right'
-    return True
+    hop = LEDGE_HOP_DIRECTION.get(currentTileType)
+    return hop is None or direction == hop
 
 
 def encounterTilesFor(tiles, widthTiles, heightTiles, method):
@@ -661,13 +672,22 @@ class Pathfinder:
             if not (0 <= nc < tw and 0 <= nr < th):
                 continue
             tileType = tiles[nr][nc]
-            enterable = (self._isWalkable(tileType, capabilities)
-                         or (nc, nr) in passable
-                         or ((nc, nr) in extraGoals
-                             and tileType in INTERACTABLE_TYPES))
+            if tileType in LEDGE_HOP_DIRECTION:
+                # A ledge is not walkable terrain you may approach from any
+                # side - it is enterable only from the direction it hops, which
+                # is the whole of the rule. Deciding this by _isWalkable instead
+                # is what kept ledges out of every route: they are absent from
+                # WALKABLE_TYPES, so A* read a painted ledge as a wall and
+                # walked the long way round.
+                enterable = (LEDGE_HOP_DIRECTION[tileType] == dName)
+            else:
+                enterable = (self._isWalkable(tileType, capabilities)
+                             or (nc, nr) in passable
+                             or ((nc, nr) in extraGoals
+                                 and tileType in INTERACTABLE_TYPES))
             if not enterable:
                 continue
-            # Ledge restrictions are a property of the tile being left.
+            # Ledge restrictions are a property of the tile being left, too.
             if not self._canMoveDirection(currentType, dName):
                 continue
             yield (nc, nr), tileType

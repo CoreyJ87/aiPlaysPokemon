@@ -38,13 +38,21 @@ The margin test earns its place: a pale, perfectly flat band of ground along
 the bottom of Route 1 passes every other check - it is flat, it agrees on a
 colour, that colour is nowhere in the trees above, and the treeline gives it a
 crisp top edge. What gives it away is that it reaches both screen edges, which
-a message box never does.
+a message box never does. It carries most of the load, too: of 9495 random map
+crops, all but one are already rejected before the world test is consulted.
 
-Measured against every frame in textAnalysis/testPhotos plus 1288 random
-240x160 crops of the map rips: every message-box frame detected, and all 1288
-map crops rejected - the margin test alone accounted for the last 13. It is
-still a heuristic, so callers should treat a positive as "probably", never as
-"certainly" - see player_ai's trust window.
+Measured against every frame in textAnalysis/testPhotos, a live Pokemon Center
+frame, and 9495 random 240x160 crops of the map rips: every message-box frame
+detected, and one crop falsely accepted (PokemonLeague_LoreleisRoom, a dark
+room whose flat floor stops short of both edges and so beats every test we
+have). It is a heuristic, so callers should treat a positive as "probably",
+never as "certainly" - see player_ai's trust window.
+
+The durable fix for all of this is gTasks: a message box is a task, so the task
+fingerprint says outright whether one is open, with no pixels involved. The
+server already assembles that fingerprint - it just needs the gTasks address
+(`python mGBA/discover.py tasks`) and a labelled fingerprint per UI. Until then,
+pixels.
 
 Battle screens are deliberately out of scope: their bottom row is split between
 a message box and the action menu, so no row runs flat across, and the harness
@@ -83,7 +91,16 @@ ROW_FLAT = 0.90
 # roughly 20-25 in practice; a dozen is a comfortable floor.
 MIN_FLAT_ROWS = 12
 # If the box colour is this common in the world above, it is the world, not a box.
-MAX_WORLD_SHARE = 0.05
+#
+# Indoors is what sets this. A message box is filled with white, and so is a
+# Pokemon Center - the ceiling band, the counter, the PCs and the nurse are all
+# the same white, which put a real box in Viridian's Center at 0.061 and had the
+# harness calling it scenery. Outdoors nothing shares a colour with the box at
+# all, which is why 0.05 held up for so long: every frame it was tuned on scored
+# 0.000. The real negatives are far away on the other side - a flat stretch of
+# ground scores 0.149 (overview.png) and 0.160 (move.png) - so the threshold
+# sits between the two populations rather than hard against the positives.
+MAX_WORLD_SHARE = 0.10
 # The same, for the strips of screen to the left and right of the box. Real
 # boxes score 0.00 here and terrain scores upwards of 0.5, so the threshold sits
 # nowhere near anything and only has to be non-zero for the odd stray pixel.

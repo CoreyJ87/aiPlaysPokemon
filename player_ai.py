@@ -424,6 +424,8 @@ class Actions:
             match = re.search(r"\d+", args[1])
             if match:
                 times = max(1, min(MAX_PRESSES, int(match.group())))
+
+        before = self._worldMark()
         self._menuTap(button, times)
 
         # navigator caches which way we're facing to save a tap per step. A raw
@@ -431,7 +433,56 @@ class Actions:
         # cutscene that spun us, so drop the cache rather than trust it.
         title = button.title()
         self.nav.facing = title if title in DIRECTIONS else None
-        return f"pressed {button}" + (f" x{times}" if times > 1 else "")
+        label = f"pressed {button}" + (f" x{times}" if times > 1 else "")
+        return label + self._pressEffect(before)
+
+    def _worldMark(self) -> dict | None:
+        """The two things a button press can change: where you are, and whether
+        there is a box on screen."""
+        try:
+            state = self.client.game_state()
+        except (MGBAError, ValueError):
+            return None
+        player = state.get("player", {}) or {}
+        dialog = False
+        if self.cfg.detectDialog and not state.get("in_battle"):
+            try:
+                dialog = bool(measureScreen(self.client.screenshot())["open"])
+            except (MGBAError, ValueError):
+                dialog = False
+        return {"battle": bool(state.get("in_battle")),
+                "dialog": dialog,
+                "ram": (player.get("map_bank"), player.get("map_number"),
+                        player.get("x"), player.get("y"))}
+
+    def _pressEffect(self, before: dict | None) -> str:
+        """Say what the press actually did.
+
+        Every other command here reports its outcome - `move` says where you
+        ended up, `goto` says whether it arrived. `press` used to answer
+        "pressed A" whether it had opened a conversation or tapped thin air,
+        which is the one case where the model cannot tell the difference for
+        itself: a 240x160 screenshot is not enough to be sure a box is there,
+        and six lines of "press a -> pressed A" in the history read exactly
+        like a long conversation going well. That is how a player ends up
+        pressing A at an empty gym floor for twenty turns, each turn more
+        convinced by its own record. So report the effect, and be blunt when
+        there wasn't one.
+        """
+        after = self._worldMark()
+        if before is None or after is None:
+            return ""
+        if after["battle"] and not before["battle"]:
+            return " - a battle started"
+        if after["dialog"]:
+            return " - there is a text box on screen now; keep pressing A"
+        if before["dialog"]:
+            return " - the text box is gone; you can walk again"
+        if after["ram"] != before["ram"]:
+            return " - you moved"
+        return (" - nothing responded. There is no text box on screen and "
+                "nothing in front of you to talk to. Pressing A again will do "
+                "the same nothing; walk somewhere else instead")
 
     def move(self, args: list) -> str:
         self._requireNoDialog()
@@ -712,6 +763,7 @@ class Observation:
     dialogOpen: bool = False            # a message box is covering the screen
     dialogText: str = ""                # what it says, if gStringVar4 is known
     dialogDoubted: bool = False         # asserted too long without anything moving
+    noDialogNotice: bool = False        # pressing A at nothing; say so outright
     lostOnMap: bool = False             # our tile is one nobody could stand on
 
     # ---- rendering --------------------------------------------------------
@@ -728,6 +780,8 @@ class Observation:
             blocks.append(self._namingBlock())
         elif self.dialogOpen:
             blocks.append(self._dialogBlock())
+        elif self.noDialogNotice:
+            blocks.append(self._noDialogBlock())
         blocks.append(self._situation())
         if self.inBattle:
             blocks.append(self.battleReport)
@@ -793,6 +847,26 @@ class Observation:
         lines.append("  Press A to advance the text. Long conversations take "
                      "several presses; keep going until the box is gone.")
         return "\n".join(lines)
+
+    def _noDialogBlock(self) -> str:
+        """Contradict the hallucination outright, once it has started.
+
+        Saying nothing about dialog is not the same as saying there is none.
+        The model is looking at a 240x160 screenshot with a strong prior that
+        a gym contains a trainer who talks, and silence in the report leaves
+        that prior unopposed - it will narrate a conversation nobody is
+        having and press A at it indefinitely. Only shown once the pressing
+        has actually started, so an ordinary turn is not cluttered with a
+        denial of something nobody suggested.
+        """
+        return "\n".join([
+            "THERE IS NO TEXT BOX ON SCREEN.",
+            "  You pressed A and nothing answered. Whatever the screenshot "
+            "looks like, nobody is talking to you: there is no conversation "
+            "to advance and no menu waiting on you.",
+            "  Pressing A again will do the same nothing. To talk to someone "
+            "you have to be standing next to them and facing them - use "
+            "`goto` to walk to them by name, which handles that for you."])
 
     def _situation(self) -> str:
         p = self.state.get("player", {})
@@ -1227,6 +1301,9 @@ class PlayerAI:
         obs.dialogOpen = reading["open"]
         if not obs.dialogOpen:
             self._dialogStreak = 0
+            # No box, and the last thing we did was press A at one anyway. The
+            # model is arguing with the screenshot, so answer it directly.
+            obs.noDialogNotice = self._lastActionWasAdvance()
             return
 
         obs.dialogText = (screen or {}).get("dialog_text", "") or ""

@@ -677,12 +677,6 @@
       11
     ]
   ],
-  "3-14-Route14": [
-    [
-      3,
-      14
-    ]
-  ],
   "3-19-Route1": [
     [
       3,
@@ -759,6 +753,12 @@
     [
       3,
       31
+    ]
+  ],
+  "3-32-Route14": [
+    [
+      3,
+      32
     ]
   ],
   "3-33-Route15": [
@@ -941,6 +941,150 @@
       7
     ]
   ],
+  "7-0-CeruleanCity_House1": [
+    [
+      7,
+      0
+    ]
+  ],
+  "7-1-CeruleanCity_House2": [
+    [
+      7,
+      1
+    ]
+  ],
+  "7-2-CeruleanCity_House3": [
+    [
+      7,
+      2
+    ]
+  ],
+  "7-3-CeruleanCity_PokemonCenter_1F": [
+    [
+      7,
+      3
+    ]
+  ],
+  "7-4-CeruleanCity_PokemonCenter_2F": [
+    [
+      7,
+      4
+    ]
+  ],
+  "7-5-CeruleanCity_Gym": [
+    [
+      7,
+      5
+    ]
+  ],
+  "7-6-CeruleanCity_BikeShop": [
+    [
+      7,
+      6
+    ]
+  ],
+  "7-7-CeruleanCity_Mart": [
+    [
+      7,
+      7
+    ]
+  ],
+  "7-8-CeruleanCity_House4": [
+    [
+      7,
+      8
+    ]
+  ],
+  "7-9-CeruleanCity_House5": [
+    [
+      7,
+      9
+    ]
+  ],
+  "8-0-LavenderTown_PokemonCenter_1F": [
+    [
+      8,
+      0
+    ]
+  ],
+  "8-1-LavenderTown_PokemonCenter_2F": [
+    [
+      8,
+      1
+    ]
+  ],
+  "8-2-LavenderTown_VolunteerPokemonHouse": [
+    [
+      8,
+      2
+    ]
+  ],
+  "8-3-LavenderTown_House1": [
+    [
+      8,
+      3
+    ]
+  ],
+  "8-4-LavenderTown_House2": [
+    [
+      8,
+      4
+    ]
+  ],
+  "8-5-LavenderTown_Mart": [
+    [
+      8,
+      5
+    ]
+  ],
+  "9-0-VermilionCity_House1": [
+    [
+      9,
+      0
+    ]
+  ],
+  "9-1-VermilionCity_PokemonCenter_1F": [
+    [
+      9,
+      1
+    ]
+  ],
+  "9-2-VermilionCity_PokemonCenter_2F": [
+    [
+      9,
+      2
+    ]
+  ],
+  "9-3-VermilionCity_PokemonFanClub": [
+    [
+      9,
+      3
+    ]
+  ],
+  "9-4-VermilionCity_House2": [
+    [
+      9,
+      4
+    ]
+  ],
+  "9-5-VermilionCity_Mart": [
+    [
+      9,
+      5
+    ]
+  ],
+  "9-6-VermilionCity_Gym": [
+    [
+      9,
+      6
+    ]
+  ],
+  "9-7-VermilionCity_House3": [
+    [
+      9,
+      7
+    ]
+  ],
   "15-0-Route2_ViridianForest_SouthEntrance": [
     [
       15,
@@ -963,6 +1107,162 @@
     [
       15,
       3
+    ]
+  ],
+  "16-0-Route4_PokemonCenter_1F": [
+    [
+      16,
+      0
+    ]
+  ],
+  "16-1-Route4_PokemonCenter_2F": [
+    [
+      16,
+      1
+    ]
+  ],
+  "17-0-Route5_PokemonDayCare": [
+    [
+      17,
+      0
+    ]
+  ],
+  "17-1-Route5_SouthEntrance": [
+    [
+      17,
+      1
+    ]
+  ],
+  "18-0-Route6_NorthEntrance": [
+    [
+      18,
+      0
+    ]
+  ],
+  "18-1-Route6_UnusedHouse": [
+    [
+      18,
+      1
+    ]
+  ],
+  "19-0-Route7_EastEntrance": [
+    [
+      19,
+      0
+    ]
+  ],
+  "20-0-Route8_WestEntrance": [
+    [
+      20,
+      0
+    ]
+  ],
+  "21-0-Route10_PokemonCenter_1F": [
+    [
+      21,
+      0
+    ]
+  ],
+  "21-1-Route10_PokemonCenter_2F": [
+    [
+      21,
+      1
+    ]
+  ],
+  "22-0-Route11_EastEntrance_1F": [
+    [
+      22,
+      0
+    ]
+  ],
+  "22-1-Route11_EastEntrance_2F": [
+    [
+      22,
+      1
+    ]
+  ],
+  "23-0-Route12_NorthEntrance_1F": [
+    [
+      23,
+      0
+    ]
+  ],
+  "23-1-Route12_NorthEntrance_2F": [
+    [
+      23,
+      1
+    ]
+  ],
+  "23-2-Route12_FishingHouse": [
+    [
+      23,
+      2
+    ]
+  ],
+  "24-0-Route15_WestEntrance_1F": [
+    [
+      24,
+      0
+    ]
+  ],
+  "24-1-Route15_WestEntrance_2F": [
+    [
+      24,
+      1
+    ]
+  ],
+  "25-0-Route16_House": [
+    [
+      25,
+      0
+    ]
+  ],
+  "25-1-Route16_NorthEntrance_1F": [
+    [
+      25,
+      1
+    ]
+  ],
+  "25-2-Route16_NorthEntrance_2F": [
+    [
+      25,
+      2
+    ]
+  ],
+  "26-0-Route18_EastEntrance_1F": [
+    [
+      26,
+      0
+    ]
+  ],
+  "26-1-Route18_EastEntrance_2F": [
+    [
+      26,
+      1
+    ]
+  ],
+  "27-0-Route19_UnusedHouse": [
+    [
+      27,
+      0
+    ]
+  ],
+  "28-0-Route22_NorthEntrance": [
+    [
+      28,
+      0
+    ]
+  ],
+  "29-0-Route23_UnusedHouse": [
+    [
+      29,
+      0
+    ]
+  ],
+  "30-0-Route25_SeaCottage": [
+    [
+      30,
+      0
     ]
   ]
 }

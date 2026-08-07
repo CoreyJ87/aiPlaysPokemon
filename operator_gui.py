@@ -101,7 +101,11 @@ class OperatorGui:
             self.activeVar.set(f'Active request: "{req.text}"' if req
                                else "(no active request)")
             verdict = self.inbox.verdict
-            if verdict is not None and not verdict.accepted:
+            if verdict is not None and verdict.easterEgg:
+                self.reactionLabel.config(foreground="#6a3d9a", font=("", 9, "normal"))
+                self.reactionVar.set(verdict.reason)
+            elif verdict is not None and not verdict.accepted:
+                self.reactionLabel.config(foreground="#a33", font=("", 9, "italic"))
                 reaction = f" {verdict.reaction}" if verdict.reaction else ""
                 self.reactionVar.set(f"Rejected: {verdict.reason}.{reaction}")
             else:

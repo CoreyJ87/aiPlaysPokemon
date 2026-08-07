@@ -33,6 +33,7 @@ class Verdict:
     accepted: bool
     reason: str = ""      # why, for whoever asked
     reaction: str = ""    # a short in-character line - what the avatar would say
+    easterEgg: bool = False   # a hidden trigger fired, not an ordinary rejection
 
 
 class OperatorInbox:
@@ -88,9 +89,11 @@ class OperatorInbox:
             self._active = request
             self._verdict = Verdict(accepted=True)
 
-    def reject(self, request: OperatorRequest, reason: str, reaction: str = ""):
+    def reject(self, request: OperatorRequest, reason: str, reaction: str = "",
+              easterEgg: bool = False):
         with self._lock:
-            self._verdict = Verdict(accepted=False, reason=reason, reaction=reaction)
+            self._verdict = Verdict(accepted=False, reason=reason,
+                                    reaction=reaction, easterEgg=easterEgg)
 
     # ---- play loop / GUI readers -----------------------------------------
 

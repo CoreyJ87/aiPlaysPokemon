@@ -13,19 +13,30 @@ a verdict, a reason (for whoever asked), and a short in-character reaction
 line - that line is written so the avatar can eventually speak it, but for
 now it just shows up in the operator console.
 
-FeasibilityWorker runs both stages on their own thread, polling the inbox for
+There is a stage 0 ahead of both: checkEasterEgg() matches a request against
+easter_eggs.json, if one exists and is enabled, before spending a regex or a
+model call on it. A hit is rejected like any other request - the matched
+response never reaches player_ai - but flagged so the operator console (and
+eventually the avatar) can tell it apart from an ordinary rejection.
+
+FeasibilityWorker runs every stage on its own thread, polling the inbox for
 new requests, so a slow model call never stalls a turn or freezes the GUI.
 """
 
 from __future__ import annotations
 
+import json
 import re
 import threading
 import time
+from pathlib import Path
 
 import ollama
 
 from operator_inbox import OperatorInbox, OperatorRequest, Verdict
+
+HERE = Path(__file__).resolve().parent
+EASTER_EGG_PATH = HERE / "easter_eggs.json"
 
 MAX_LEN = 200
 
@@ -56,6 +67,30 @@ def quickReject(text: str) -> str | None:
     if INJECTION_RE.search(text):
         return ("reads like it's trying to give player_ai new instructions, "
                 "not ask for something in-game")
+    return None
+
+
+def checkEasterEgg(text: str, path: Path = EASTER_EGG_PATH) -> str | None:
+    """The matched_response if `text` contains one of easter_eggs.json's
+    player_strings (case-insensitive substring, anywhere in the message);
+    None if it doesn't match, or the file is missing, disabled, or malformed.
+
+    Read fresh on every call rather than cached at startup, so an operator
+    can flip "enabled" off mid-demo without restarting player_ai.
+    """
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not data.get("enabled"):
+        return None
+    response = data.get("matched_response") or ""
+    strings = data.get("player_strings") or []
+    if not response or not strings:
+        return None
+    lowered = text.lower()
+    if any(str(s).lower() in lowered for s in strings):
+        return response
     return None
 
 
@@ -155,6 +190,10 @@ class FeasibilityWorker:
             self._judge(request)
 
     def _judge(self, request: OperatorRequest):
+        egg = checkEasterEgg(request.text)
+        if egg is not None:
+            self.inbox.reject(request, egg, easterEgg=True)
+            return
         reason = quickReject(request.text)
         if reason is not None:
             self.inbox.reject(request, reason)

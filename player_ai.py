@@ -44,6 +44,8 @@ Usage:
     python player_ai.py once            # a single turn, then stop
     python player_ai.py manual          # drive the tool layer by hand, no LLM
     python player_ai.py dry-run         # ask the model, print, execute nothing
+    python player_ai.py gui             # play, with a pause/request console
+                                         # (operator_gui.py) alongside the terminal
     python player_ai.py --goal "get to Pewter City and beat Brock"
     python player_ai.py --no-objectives # play with no walkthrough at all
 """
@@ -57,6 +59,7 @@ import io
 import json
 import re
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -760,6 +763,7 @@ class Observation:
     hidden: int = 0                     # how many destinations were filtered out
     namingOpen: bool = False            # the keyboard screen is asking for a name
     namingSoFar: str = ""               # what is already typed into it
+    liveRequest: str = ""               # a short-term ask from the operator GUI
     dialogOpen: bool = False            # a message box is covering the screen
     dialogText: str = ""                # what it says, if gStringVar4 is known
     dialogDoubted: bool = False         # asserted too long without anything moving
@@ -772,6 +776,8 @@ class Observation:
         blocks = [f"=== TURN {self.turn} ==="]
         if cfg.goal:
             blocks.append(f"WHAT YOUR OPERATOR ASKED FOR: {cfg.goal}")
+        if self.liveRequest:
+            blocks.append(self._liveRequestBlock())
         if self.objectiveText:
             blocks.append(self.objectiveText)
         # Before anything else about the world: if a box or a keyboard is up,
@@ -803,6 +809,14 @@ class Observation:
             blocks.append(self._history(history, cfg.historyLength))
         blocks.append(self._commandHelp())
         return "\n\n".join(b for b in blocks if b)
+
+    def _liveRequestBlock(self) -> str:
+        return "\n".join([
+            "SOMETHING JUST CAME IN",
+            f'  "{self.liveRequest}"',
+            "  This is more urgent than the objective below - work on it now. "
+            "If it isn't possible from where you are, say why with `note` and "
+            "go back to the objective."])
 
     def _walkingBlocked(self) -> bool:
         return self.namingOpen or (self.dialogOpen and not self.dialogDoubted)
@@ -1193,6 +1207,11 @@ class PlayerAI:
         self._pendingMove = None
         self._loadAddresses()
 
+        # Set by main() when running in `gui` mode: an operator_inbox.OperatorInbox
+        # shared with the Tkinter console. None everywhere else, so run()/observe()
+        # behave exactly as before when nothing is watching.
+        self.inbox = None
+
     def close(self):
         self.nav.close()
 
@@ -1243,6 +1262,10 @@ class PlayerAI:
         if obs.namingOpen:
             obs.namingSoFar = currentName(self.client) or ""
         self._checkDialog(obs, state, screen, inBattle)
+
+        if self.inbox is not None:
+            request = self.inbox.request
+            obs.liveRequest = request.text if request is not None else ""
 
         # Objectives first: the current one decides which destinations are worth
         # showing, so it has to be settled before the survey is filtered.
@@ -1639,8 +1662,20 @@ class PlayerAI:
         # across restarts so the objective clock survives them, which would
         # make `--turns 3` mean "stop at turn 3, i.e. immediately".
         taken = 0
+        wasPaused = False
         try:
             while maxTurns is None or taken < maxTurns:
+                if self.inbox is not None and self.inbox.stopped:
+                    break
+                if self.inbox is not None and self.inbox.paused:
+                    if not wasPaused:
+                        print("\n-- paused by operator --")
+                        wasPaused = True
+                    time.sleep(0.2)
+                    continue
+                if wasPaused:
+                    print("-- resumed --")
+                    wasPaused = False
                 try:
                     self.step()
                     taken += 1
@@ -1746,6 +1781,35 @@ def manual(player: PlayerAI):
 
 
 # --------------------------------------------------------------------------
+# GUI mode — an operator console next to the terminal
+# --------------------------------------------------------------------------
+
+
+def runGui(player: PlayerAI, maxTurns: int | None):
+    """Play with a Tkinter console alongside it: pause, resume, and hand the
+    model a short-term request. All the usual THINK/ACTION/RESULT printing
+    still happens in the terminal - the window only owns pause and input.
+
+    Tkinter needs the main thread, so the play loop runs on a background
+    thread instead; both only ever touch the shared OperatorInbox.
+    """
+    from operator_gui import OperatorGui
+    from operator_inbox import OperatorInbox
+
+    inbox = OperatorInbox()
+    player.inbox = inbox
+
+    playThread = threading.Thread(target=lambda: player.run(maxTurns=maxTurns),
+                                  daemon=True)
+    playThread.start()
+
+    OperatorGui(inbox).run()   # blocks until the window is closed
+
+    inbox.stop()
+    playThread.join(timeout=5)
+
+
+# --------------------------------------------------------------------------
 # CLI
 # --------------------------------------------------------------------------
 
@@ -1772,7 +1836,7 @@ def buildConfig(args) -> Config:
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[1])
     parser.add_argument("mode", nargs="?", default="play",
-                        choices=("play", "once", "manual", "dry-run"))
+                        choices=("play", "once", "manual", "dry-run", "gui"))
     parser.add_argument("--model", default=Config.model)
     parser.add_argument("--ollama-host", default=None,
                         help="e.g. http://192.168.1.20:11434")
@@ -1822,6 +1886,8 @@ def main():
             player.dryRun()
         elif args.mode == "once":
             player.step()
+        elif args.mode == "gui":
+            runGui(player, args.turns)
         else:
             player.run(maxTurns=args.turns)
     return 0

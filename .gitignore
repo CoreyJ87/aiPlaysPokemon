@@ -226,3 +226,6 @@ __marimo__/
 # Per-playthrough state, and it rebuilds itself from the save on the next run
 # (objectives.json and battle/trainers.json are the authored halves, tracked).
 /memories.json
+
+# The player's latest screenshot, since that will always be changing
+screenshot.png

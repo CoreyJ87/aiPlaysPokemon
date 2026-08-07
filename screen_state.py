@@ -95,12 +95,17 @@ MIN_FLAT_ROWS = 12
 # Indoors is what sets this. A message box is filled with white, and so is a
 # Pokemon Center - the ceiling band, the counter, the PCs and the nurse are all
 # the same white, which put a real box in Viridian's Center at 0.061 and had the
-# harness calling it scenery. Outdoors nothing shares a colour with the box at
-# all, which is why 0.05 held up for so long: every frame it was tuned on scored
-# 0.000. The real negatives are far away on the other side - a flat stretch of
-# ground scores 0.149 (overview.png) and 0.160 (move.png) - so the threshold
-# sits between the two populations rather than hard against the positives.
-MAX_WORLD_SHARE = 0.10
+# harness calling it scenery. Oak's lab pushes it further still - its shelves,
+# machines and cabinets are white too, and scored a real box (mid-conversation,
+# choosing a starter) at 0.120 while sitting at 0.10. Outdoors nothing shares a
+# colour with the box at all, which is why 0.05 held up for so long: every frame
+# it was tuned on scored 0.000. The real negatives are far away on the other
+# side - a flat stretch of ground scores 0.149 (overview.png) and 0.160
+# (move.png) - so the threshold sits between the two populations rather than
+# hard against the positives. Those two negatives also fail the margin test
+# below on their own (0.47 and 0.20 against its 0.10 cap), so raising this
+# alone does not reopen them.
+MAX_WORLD_SHARE = 0.13
 # The same, for the strips of screen to the left and right of the box. Real
 # boxes score 0.00 here and terrain scores upwards of 0.5, so the threshold sits
 # nowhere near anything and only has to be non-zero for the odd stray pixel.

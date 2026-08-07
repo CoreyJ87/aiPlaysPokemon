@@ -48,8 +48,15 @@ class OperatorGui:
                   command=self._clear).pack(side="left", padx=4)
 
         self.activeVar = tk.StringVar(value="(no active request)")
-        ttk.Label(self.root, textvariable=self.activeVar, wraplength=440,
-                 foreground="#555").pack(padx=10, pady=(14, 0), anchor="w")
+        self.activeLabel = ttk.Label(self.root, textvariable=self.activeVar,
+                                     wraplength=440, foreground="#555")
+        self.activeLabel.pack(padx=10, pady=(14, 0), anchor="w")
+
+        self.reactionVar = tk.StringVar(value="")
+        self.reactionLabel = ttk.Label(self.root, textvariable=self.reactionVar,
+                                       wraplength=440, foreground="#a33",
+                                       font=("", 9, "italic"))
+        self.reactionLabel.pack(padx=10, pady=(4, 0), anchor="w")
 
         ttk.Label(self.root, text="The model's thoughts and actions are "
                                   "printed in the terminal, not here.",
@@ -85,9 +92,21 @@ class OperatorGui:
     def _poll(self):
         self.status.set("PAUSED" if self.inbox.paused else "running")
         self.pauseButton.config(text="Resume" if self.inbox.paused else "Pause")
-        req = self.inbox.request
-        self.activeVar.set(f'Active request: "{req.text}"' if req
-                           else "(no active request)")
+
+        if self.inbox.pending is not None:
+            self.activeVar.set(f'Checking: "{self.inbox.pending.text}" ...')
+            self.reactionVar.set("")
+        else:
+            req = self.inbox.request
+            self.activeVar.set(f'Active request: "{req.text}"' if req
+                               else "(no active request)")
+            verdict = self.inbox.verdict
+            if verdict is not None and not verdict.accepted:
+                reaction = f" {verdict.reaction}" if verdict.reaction else ""
+                self.reactionVar.set(f"Rejected: {verdict.reason}.{reaction}")
+            else:
+                self.reactionVar.set("")
+
         self.root.after(300, self._poll)
 
     def run(self):

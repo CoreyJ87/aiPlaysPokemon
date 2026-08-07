@@ -1211,6 +1211,10 @@ class PlayerAI:
         # shared with the Tkinter console. None everywhere else, so run()/observe()
         # behave exactly as before when nothing is watching.
         self.inbox = None
+        # The last report rendered in step(), so the feasibility worker can
+        # judge a request against real game state without touching the mGBA
+        # socket from its own thread (that socket belongs to this one).
+        self.lastReport = ""
 
     def close(self):
         self.nav.close()
@@ -1568,6 +1572,7 @@ class PlayerAI:
         self.actions.observation = obs
 
         report = obs.render(self.cfg, self.history)
+        self.lastReport = report
         print(f"\n{'=' * 72}")
         print(report)
         print("-" * 72)
@@ -1790,9 +1795,15 @@ def runGui(player: PlayerAI, maxTurns: int | None):
     model a short-term request. All the usual THINK/ACTION/RESULT printing
     still happens in the terminal - the window only owns pause and input.
 
+    Every submitted request is judged before the model ever sees it: a free
+    instant filter, then a separate model call that reviews it against the
+    current game state (see feasibility.py). That runs on its own thread too,
+    so a slow judgment never stalls a turn or freezes the window.
+
     Tkinter needs the main thread, so the play loop runs on a background
-    thread instead; both only ever touch the shared OperatorInbox.
+    thread instead; every side only ever touches the shared OperatorInbox.
     """
+    from feasibility import FeasibilityWorker, Referee
     from operator_gui import OperatorGui
     from operator_inbox import OperatorInbox
 
@@ -1802,6 +1813,11 @@ def runGui(player: PlayerAI, maxTurns: int | None):
     playThread = threading.Thread(target=lambda: player.run(maxTurns=maxTurns),
                                   daemon=True)
     playThread.start()
+
+    referee = Referee(player.cfg.model, ollamaHost=player.cfg.ollamaHost)
+    worker = FeasibilityWorker(inbox, referee,
+                               getSituationReport=lambda: player.lastReport)
+    worker.start()
 
     OperatorGui(inbox).run()   # blocks until the window is closed
 

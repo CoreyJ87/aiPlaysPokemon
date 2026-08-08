@@ -4,6 +4,40 @@
 
 We in the AI Village would like to provide a better example in this space, showing off both the logic of why and what to expose to a model, as well as how different harness and tooling designs can allow local edge models to work at the same level as frontier cloud platforms.  To do this, we decided to use the classic video games of Pokemon Fire Red and Leaf Green.  Both because it is a simple game that everyone can understand, and the author of this repo is a massive fan of the series.  
 
+## DEFCON Contest Info
+
+Sorry for doing this so last minuite, but here is the google form submission to fill out if you want to have your experiments and run attempts mentioned in the DEFCON end of show presentation at DEFCON34: [Submission Form]{https://docs.google.com/forms/d/e/1FAIpQLScvdxRqPBplhhSpsxeEiRsX0I_EEXolcxpAfejcTP9hm2PdUw/viewform?usp=header}
+
+Note: doing a submission isn't a requirement, this is just for fun and to give people redit for what silly and intresting things they were able to do with the repo during defcon.  
+
+### Installation
+
+To properly run this project, you will need a couple additional software packages to be downloaded first:
+- [Ollama](https://ollama.com/): This is what we use to download and manage the models locally on the laptop/desktop/Raspberry Pi/etc
+- [mGBA](https://mgba.io/downloads.html): This is the Game Boy Advance emulator we use to run the Pokemon ROM
+- A copy of a Pokemon Fire Red or Leaf Green ROM.  For my demos, I have been using Pokemon - Leaf Green Version (U) (V1.1)
+
+The main script to have the LLM play the game is [player_ai](./player_ai.py).  To install all the requirements needed for it, from the main folder in this repo run: 
+
+```bash 
+pip install -r requirements.txt
+```
+
+### Running the Project
+
+To run the project, you need to do several things:
+
+- First make sure Ollama is running on the local machine
+- Start mGBA, and load the Pokemon Fire Red or Leaf Green ROM
+- Within mGBA, click the `Tools` menu and then the `Scripting...` menu
+  - Within the `Scripting` pop up window, click `File` and `Load Script...`
+    - Within the file dialog window, navigate to the [mgba_server.lua](./mGBA/mgba_server.lua) lua script and select it.  It is located in the mGBA folder
+    - Click `Run`, You should now see some text in the window saying the lua server is loaded.  
+- Within a terminal window, run `python player_ai.py`
+  - The AI should now be trying to play the game
+
+
+
 ## Background
 
 Pokemon actually has a long, if unintentional, history in the programming space.  While MissingNo was a glitch, it’s a great lesson in memory management.  And Twitch Plays Pokemon exposed millions of people to just how powerful and silly APIs can get.  Last year, both Anthropic and OpenAI even used the games as an informal benchmark, doing live streams with both of their models successfully completing the game.  Thus, there’s not only a lot of history in this space, but even a good comparison to grade ourselves against.  

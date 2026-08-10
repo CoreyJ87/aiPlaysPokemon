@@ -10,6 +10,8 @@ Sorry for doing this so last minuite, but here is the google form submission to 
 
 Note: doing a submission isn't a requirement, this is just for fun and to give people redit for what silly and intresting things they were able to do with the repo during defcon.  
 
+Also, for anyone who didn't visit the AI Village, the maps and path planning is only finished up to Route 3, so once you beat Brock, the AI player cannot actually navigate to Misty right now.  This is due to how I do path planning.  I have to manually label each tile of each map, which has taken longer than I expected.  
+
 ### Installation
 
 To properly run this project, you will need a couple additional software packages to be downloaded first:

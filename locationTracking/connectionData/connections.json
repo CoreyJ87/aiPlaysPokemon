@@ -971,6 +971,27 @@
           "width": 2
         }
       ]
+    },
+    "3-41-Route22": {
+      "imageFile": "3-41-Route22.png",
+      "widthTiles": 48,
+      "heightTiles": 24,
+      "connections": [
+        {
+          "type": "edge",
+          "fromTile": [
+            47,
+            6
+          ],
+          "toMap": "3-1-ViridianCity",
+          "toTile": [
+            0,
+            16
+          ],
+          "direction": "east",
+          "width": 4
+        }
+      ]
     }
   },
   "landmarks": {},

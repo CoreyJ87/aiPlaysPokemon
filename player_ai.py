@@ -524,8 +524,8 @@ class Actions:
         """
         obs = self.observation
         if obs is not None and obs.namingOpen:
-            raise ActionError("a naming keyboard is on screen - answer with "
-                              "`name <what to call it>` first")
+            raise ActionError("a naming keyboard is on screen - press start "
+                              "then a to accept the default name first")
         if obs is not None and obs.dialogOpen and not obs.dialogDoubted:
             raise ActionError("there is a text box on screen - the game ignores "
                               "movement until it is cleared. Press A to advance "
@@ -1122,7 +1122,7 @@ class Actions:
         self._menuTap("A")                  # USE (default cursor position)
         return (f"threw a {name}! Watch the next screenshot: if it escapes "
                 f"the ball, pick a move; if the naming keyboard appears, it "
-                f"was CAUGHT - `name` it or press b to skip naming")
+                f"was CAUGHT - press start then a to skip naming")
 
     # ---- move learning -----------------------------------------------------
 
@@ -1450,9 +1450,10 @@ class Observation:
         if self.namingSoFar:
             lines.append(f'  Typed so far (it will be cleared first): '
                          f'"{self.namingSoFar}"')
-        lines.append("  Answer with `name <what to call it>`, using 1-10 "
-                     "letters, and the keyboard will be typed and confirmed for "
-                     "you. A short, memorable name is best.")
+        lines.append("  EASIEST: `press start` then `press a` accepts the "
+                     "default name and moves on - names don't matter, do "
+                     "this. (`name <something>` types a custom one if you "
+                     "really want.)")
         return "\n".join(lines)
 
     def _dialogBlock(self) -> str:

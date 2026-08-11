@@ -189,8 +189,9 @@ class Keyboard:
         """
         text = self._name()
         if text is None:
-            raise NamingError("can't read the name buffer, so deleting would be "
-                              "guesswork - press B by hand to clear it")
+            raise NamingError("can't read the name buffer, so typing would be "
+                              "guesswork - names don't matter anyway: press "
+                              "start then a to accept the default name")
         while text:
             self._tap("B")
             after = self._name()

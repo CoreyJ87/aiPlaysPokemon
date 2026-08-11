@@ -1037,11 +1037,19 @@ class Navigator:
             steps += 1
             if outcome == 'blocked':
                 blocked += 1
+                # Tell the pathfinder which tile bounced us - almost always an
+                # NPC standing on it. The mark is what makes the replan below
+                # actually route around them; without it every replan produces
+                # the identical path and a parked NPC becomes an infinite loop.
+                self.pf.avoidTile(
+                    curMap, self._expectedTile(curTile, plan['directions'][0]))
                 if blocked >= BLOCKED_LIMIT:
                     return self._result(
                         "stuck", description, steps,
                         f"blocked {blocked}x heading {plan['directions'][0]} from "
-                        f"{curMap} {curTile}")
+                        f"{curMap} {curTile} - probably a person standing there. "
+                        f"I will avoid that tile for a while; try the same goto "
+                        f"again and I should route around them")
                 # Replanning routes around whatever is in the way.
                 continue
             blocked = 0

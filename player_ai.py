@@ -72,7 +72,7 @@ for _p in (HERE / "mGBA", HERE / "battle", HERE / "locationTracking"):
 
 import ollama  # noqa: E402
 
-from mgba_client import BUTTONS, MGBAClient, MGBAError  # noqa: E402
+from mgba_client import BUTTONS, MGBAClient, MGBAError, gen3_decode  # noqa: E402
 from navigator import Navigator  # noqa: E402
 from pathfinder import BLOCKED, RETURN_TARGET  # noqa: E402
 from damage_calc import GameData  # noqa: E402
@@ -80,6 +80,7 @@ from live_calc import (  # noqa: E402
     Session,
     Snapshot,
     build_rows,
+    effective_speed,
     ko_text,
     move_names,
     print_matchup,
@@ -107,6 +108,27 @@ from naming_screen import isOpen as namingScreenOpen  # noqa: E402
 MENU_TAP_FRAMES = 12
 MENU_TAP_DELAY = 0.15
 
+# gBattleTypeFlags (FRLG). Bit 3 is the trainer flag - clear means a wild
+# battle, which is the only kind `run` works in. Read over PEEK rather than
+# guessed from party sizes, because plenty of early trainers carry one mon.
+# Verified empirically against LeafGreen v1.1 (wild battle read 0x4:
+# IS_MASTER set, TRAINER clear).
+BATTLE_TYPE_FLAGS_ADDR = 0x02022B4C
+BATTLE_TYPE_TRAINER = 0x08
+
+# callback2 values (see mGBA/screens.json) that mean the battle proper is on
+# screen. gMain.inBattle stays true while the party menu, a summary page or
+# the bag is open on top of the fight - and a move table rendered for those
+# screens sends `use` taps into whatever menu is actually drawn. Anything
+# in-battle but not in this set is such an overlay.
+BATTLE_SCREEN_CALLBACKS = {
+    "080565BD",   # battle_start_from_field
+    "0800FDB1",   # battle_init
+    "0801051D",   # battle_intro
+    "08011115",   # battle_main
+    "080777FD",   # battle_reshow_after_menu
+}
+
 # Battle menus are 2x2 grids whose cursor persists between turns, so "press A
 # twice to attack" is not reliable - you might attack with whatever you picked
 # last turn. The cursor movement is clamped rather than wrapping (DPAD_LEFT is
@@ -117,6 +139,27 @@ MENU_TAP_DELAY = 0.15
 #   action menu:  FIGHT 0  BAG 1        move menu:  slot0  slot1
 #                 POKEMON 2 RUN 3                   slot2  slot3
 ACTION_FIGHT, ACTION_BAG, ACTION_POKEMON, ACTION_RUN = 0, 1, 2, 3
+
+# The battle cursors CAN be read: gActionSelectionCursor / gMoveSelectionCursor
+# (same addresses in FR 1.0 and LG 1.1 per pret's symbol files). One byte per
+# battler, battler 0 is the player in singles. Reading them upgrades the blind
+# LEFT+UP reset to a verified walk - a tap eaten by an animation gets noticed
+# and retried instead of silently attacking with the wrong move.
+ACTION_CURSOR_ADDR = 0x02023FF8
+MOVE_CURSOR_ADDR = 0x02023FFC
+
+# sShopData (src/shop.c in pret/pokefirered; same address FR 1.0 / LG 1.1):
+#   +0x04 const u16 *itemList   +0x0C u16 selectedRow  +0x0E u16 scrollOffset
+#   +0x10 u16 itemCount         +0x14 u16 maxQuantity
+# selectedRow+scrollOffset is the highlighted item's index in itemList, which
+# makes the whole buy flow verifiable instead of counted-out blind.
+SHOP_DATA_ADDR = 0x02039934
+# Item data table in ROM: 44-byte entries, name (gen3 text, 14 bytes) first,
+# price as u16 at +16. The address is per-ROM; add entries as games appear.
+ITEM_TABLE_BY_GAME = {
+    "LeafGreen v1.1": 0x083DAED4,
+}
+ITEM_ENTRY_SIZE = 44
 
 DIRECTIONS = ("Up", "Down", "Left", "Right")
 DIR_ALIASES = {"u": "Up", "up": "Up", "n": "Up", "north": "Up",
@@ -310,6 +353,10 @@ COMMANDS = (
     Command("collect", "collect <item>",
             "Walk to the nearest uncollected item ball of that name and pick it up.",
             aliases=("pickup", "grab"), context="overworld"),
+    Command("buy", "buy <item> [quantity]",
+            "Buy from the shop clerk directly in front of you (stand facing "
+            "them first). Works the mart menus for you, e.g. `buy potion 5`.",
+            aliases=("shop", "purchase"), context="overworld"),
     Command("use", "use <move name>",
             "Attack with one of your moves. Name the move, e.g. `use ember`.",
             aliases=("attack", "fight", "move_use"), context="battle"),
@@ -386,9 +433,39 @@ class Actions:
         if slot & 2:
             self._menuTap("DOWN")
 
+    def _readCursor(self, addr: int):
+        """One byte of cursor RAM, or None when the read isn't available."""
+        try:
+            value = self.client.peek(addr, 1)[0]
+        except Exception:
+            return None
+        return value if value <= 3 else None
+
+    def _cursorSeek(self, addr: int, slot: int, label: str):
+        """Walk a 2x2 battle cursor to `slot`, verified against RAM.
+
+        The blind reset works until an animation eats a tap; the cursor RAM
+        turns "should be on FIGHT now" into "is on FIGHT". Falls back to the
+        blind walk when the read fails (wrong game hash, server without PEEK).
+        """
+        for _ in range(4):
+            cur = self._readCursor(addr)
+            if cur is None:
+                self._resetCursor()
+                self._cursorTo(slot)
+                return
+            if cur == slot:
+                return
+            if (cur & 1) != (slot & 1):
+                self._menuTap("RIGHT" if slot & 1 else "LEFT")
+            if (cur & 2) != (slot & 2):
+                self._menuTap("DOWN" if slot & 2 else "UP")
+        raise ActionError(f"the {label} cursor is not responding - an "
+                          f"animation is probably still playing. `wait 1` "
+                          f"and try again")
+
     def _chooseAction(self, slot: int):
-        self._resetCursor()
-        self._cursorTo(slot)
+        self._cursorSeek(ACTION_CURSOR_ADDR, slot, "action menu")
         self._menuTap("A")
 
     def _requireBattle(self):
@@ -477,6 +554,14 @@ class Actions:
             return ""
         if after["battle"] and not before["battle"]:
             return " - a battle started"
+        if before["battle"] and not after["battle"]:
+            return " - the battle is over; you are back in the world"
+        if after["battle"]:
+            # Battle text boxes live outside where the pixel check looks, so
+            # "nothing responded" would be a guess dressed up as a fact. In a
+            # battle a press that looks like nothing is usually an animation
+            # still playing.
+            return ""
         if after["dialog"]:
             return " - there is a text box on screen now; keep pressing A"
         if before["dialog"]:
@@ -598,6 +683,118 @@ class Actions:
         return (f"{result['goal']}: {result['status']} after "
                 f"{result['steps']} step(s) - {result['reason']}")
 
+    # ---- shopping ---------------------------------------------------------
+
+    def _peekU16(self, addr: int) -> int:
+        return int.from_bytes(self.client.peek(addr, 2), "little")
+
+    def _peekU32(self, addr: int) -> int:
+        return int.from_bytes(self.client.peek(addr, 4), "little")
+
+    def _itemName(self, table: int, itemId: int) -> str:
+        return gen3_decode(self.client.peek(table + itemId * ITEM_ENTRY_SIZE,
+                                            14)).strip()
+
+    def _dialogText(self) -> str:
+        try:
+            return (self.client.screen().get("dialog_text") or "").lower()
+        except MGBAError:
+            return ""
+
+    def buy(self, args: list) -> str:
+        """Drive the mart: clerk -> BUY -> item -> quantity -> confirm -> out.
+
+        Every hop is verified against sShopData rather than counted out in
+        button presses, so an eaten tap surfaces as an honest error instead
+        of a mystery purchase.
+        """
+        self._requireNoDialog()
+        if not args:
+            raise ActionError("buy needs an item, e.g. `buy potion 5`")
+        qty = 1
+        if args[-1].isdigit():
+            qty = max(1, min(99, int(args[-1])))
+            args = args[:-1]
+        wanted = " ".join(args)
+
+        state = self.client.game_state()
+        table = ITEM_TABLE_BY_GAME.get(state.get("game", ""))
+        if table is None:
+            raise ActionError(f"no item table known for "
+                              f"{state.get('game', 'this ROM')!r} - add it to "
+                              f"ITEM_TABLE_BY_GAME")
+        moneyBefore = (state.get("player") or {}).get("money", 0)
+
+        # Clerk greeting -> BUY. The BUY/SELL/QUIT menu is created fresh each
+        # time with its cursor on BUY, so one A selects it - no navigation.
+        self._menuTap("A")
+        for _ in range(4):
+            time.sleep(0.7)
+            if "help you" in self._dialogText():
+                break
+            self._menuTap("A")
+        else:
+            raise ActionError("no shop clerk answered - stand directly in "
+                              "front of the counter, facing the clerk, and "
+                              "try again")
+        self._menuTap("A")           # BUY
+        time.sleep(1.2)              # list fade-in
+
+        # What is for sale, straight from the shop's item list in ROM.
+        listPtr = self._peekU32(SHOP_DATA_ADDR + 0x04)
+        count = self._peekU16(SHOP_DATA_ADDR + 0x10)
+        if not 0x08000000 <= listPtr < 0x0A000000 or not 0 < count <= 32:
+            raise ActionError("the buy menu did not open (this may not be a "
+                              "shop counter). Press b a few times to back out")
+        stock = []
+        for i in range(count):
+            itemId = self._peekU16(listPtr + i * 2)
+            if itemId == 0:
+                break
+            stock.append((self._itemName(table, itemId), i))
+        hit = _bestMatch(wanted, stock)
+        if hit is None:
+            self._menuTap("B", 3)    # list -> menu -> goodbye
+            self._menuTap("A")
+            raise ActionError(f"{wanted!r} is not sold here. Stock: "
+                              f"{', '.join(n for n, _ in stock)}")
+        name, index = hit
+
+        # Walk the list, verified: highlighted index = selectedRow + scroll.
+        for _ in range(count + 4):
+            at = (self._peekU16(SHOP_DATA_ADDR + 0x0C)
+                  + self._peekU16(SHOP_DATA_ADDR + 0x0E))
+            if at == index:
+                break
+            self._menuTap("DOWN" if at < index else "UP")
+        else:
+            raise ActionError("the shop cursor is not responding - press b "
+                              "to back out and try again")
+
+        self._menuTap("A")           # opens the quantity spinner at 1
+        time.sleep(0.6)
+        maxQty = self._peekU16(SHOP_DATA_ADDR + 0x14)
+        bought = min(qty, maxQty) if maxQty else qty
+        self._menuTap("UP", bought - 1)
+        self._menuTap("A")           # "that will be $X" -> YES is default
+        time.sleep(0.6)
+        self._menuTap("A")
+        time.sleep(1.0)
+        self._menuTap("A")           # "Here you are!"
+
+        # Leave: list -> BUY/SELL menu -> "Please come again".
+        self._menuTap("B", 2)
+        self._menuTap("A")
+
+        after = self.client.game_state()
+        spent = moneyBefore - (after.get("player") or {}).get("money", 0)
+        if spent <= 0:
+            return (f"walked the menus but no money moved - the purchase "
+                    f"did not go through. Check the screen with `press`")
+        note = "" if bought == qty else f" (shop capped it at {bought})"
+        return (f"bought {bought}x {name} for ${spent}{note}; "
+                f"${after['player']['money']} left")
+
     # ---- battle -----------------------------------------------------------
 
     def use(self, args: list) -> str:
@@ -621,8 +818,8 @@ class Actions:
         name, slot = hit
 
         self._chooseAction(ACTION_FIGHT)
-        self._resetCursor()          # the move cursor remembers last turn too
-        self._cursorTo(slot)
+        time.sleep(0.3)              # let the move menu draw before seeking
+        self._cursorSeek(MOVE_CURSOR_ADDR, slot, "move menu")
         self._menuTap("A")
         return f"attacking with {name} (move slot {slot + 1})"
 
@@ -1303,8 +1500,59 @@ class PlayerAI:
             obs.hiddenReason = objective.hiddenReason
 
         obs.note = " ".join(n for n in (self._checkPendingMove(state, inBattle),
+                                        self._lowHpAlert(state, inBattle),
                                         self._repeatAlert()) if n)
         return obs
+
+    def _lowHpAlert(self, state: dict, inBattle: bool) -> str:
+        """Warn when the party can't take a hit, before grass proves it.
+
+        The battle advisor can say `run`, but by then the encounter already
+        happened. The losable moment is earlier - walking encounter terrain
+        with a party one Tackle from a blackout - and nothing else in the
+        report calls that out.
+        """
+        if inBattle:
+            return ""
+        party = [p for p in (state.get("party") or []) if p.get("max_hp")]
+        if not party:
+            return ""
+        healthy = [p for p in party if p.get("hp", 0) > 0]
+        if not healthy:
+            return ""
+        poisoned = [p for p in healthy
+                    if "poison" in str(p.get("status", "")).lower()
+                    or "psn" in str(p.get("status", "")).lower()]
+        strongest = max(healthy, key=lambda p: p["hp"] / p["max_hp"])
+        share = strongest["hp"] / strongest["max_hp"]
+        if poisoned:
+            name = (poisoned[0].get("nickname")
+                    or poisoned[0].get("species_name") or "Your Pokemon")
+            return (f"{name} is POISONED and loses HP every few steps you "
+                    f"walk - it can collapse in the overworld. `heal` NOW "
+                    f"(a Pokemon Center or your mom cures it), take the "
+                    f"shortest path, and do not detour through grass.")
+        if share > 0.25:
+            return ""
+        name = strongest.get("nickname") or strongest.get("species_name") or "your Pokemon"
+        alert = (f"{name} is at {strongest['hp']}/{strongest['max_hp']} HP. One "
+                 f"more wild battle could end in a blackout - `heal` before "
+                 f"walking through grass, and stay out of it on the way.")
+        money = (state.get("player") or {}).get("money", 0)
+        if not self._healingItems(state) and money >= 300:
+            alert += (" You also carry NO healing items - next time you are "
+                      "at a Poke Mart, buy a few Potions (300 each).")
+        return alert
+
+    @staticmethod
+    def _healingItems(state: dict) -> list:
+        """HP-restoring items in the bag, best first, as display names."""
+        healing = ("MAX POTION", "HYPER POTION", "SUPER POTION", "POTION",
+                   "FULL RESTORE", "FRESH WATER", "SODA POP", "LEMONADE",
+                   "MOOMOO MILK", "ORAN BERRY", "SITRUS BERRY")
+        bag = (state.get("bag") or {}).get("items") or []
+        found = {i.get("name", "").upper(): i for i in bag}
+        return [n.title() for n in healing if n in found]
 
     # ---- what is on screen ------------------------------------------------
 
@@ -1513,6 +1761,20 @@ class PlayerAI:
         return ""
 
     def _fillBattle(self, obs: Observation, state: dict):
+        # gMain.inBattle stays true while the party menu, a summary page or
+        # the bag sits on top of the fight. Rendering the move table there
+        # sends `use` taps into whatever menu is really drawn - so name the
+        # situation instead and hand the model the way back out.
+        cb = str((obs.screen or {}).get("callback2", "")).upper()
+        if cb and cb not in BATTLE_SCREEN_CALLBACKS:
+            obs.battleReport = (
+                "You are in a battle, but a menu (party list, summary page or "
+                "bag) is open on top of it, so the move table is unavailable "
+                "and `use` will NOT work. Press b to back out to the battle "
+                "menu - possibly more than once - or finish what you opened "
+                "with `press`.")
+            return
+
         snap = Snapshot.capture(_CachedState(state))
         obs.battleReport = _captureText(print_matchup, self.battle, snap)
         if not snap.ready:
@@ -1523,7 +1785,10 @@ class PlayerAI:
 
         rows = build_rows(self.battle, snap.you, snap.foe, names, snap.you_raw)
         best = next((r for r in rows if r.is_damaging), None)
-        if best is not None:
+        outlook = self._survivalOutlook(snap, state, best)
+        if outlook is not None:
+            obs.recommendation = outlook
+        elif best is not None:
             obs.recommendation = (
                 f"CALCULATOR'S PICK: {best.move.name} - highest expected damage "
                 f"({best.expected:.0f} per turn, {ko_text(best, snap.foe)}, "
@@ -1532,6 +1797,110 @@ class PlayerAI:
         elif rows:
             obs.recommendation = ("CALCULATOR'S PICK: none of your moves damage "
                                   "this foe. Consider switching or running.")
+
+    def _wildBattle(self):
+        """True for a wild battle, False for a trainer one, None if unreadable.
+
+        `run` only works on wild Pokemon, so advice to flee has to know which
+        kind this is. The flag comes straight from RAM; if the read fails the
+        advice hedges rather than asserting something it doesn't know.
+        """
+        try:
+            raw = self.client.peek(BATTLE_TYPE_FLAGS_ADDR, 4)
+            return not (int.from_bytes(raw, "little") & BATTLE_TYPE_TRAINER)
+        except Exception:
+            return None
+
+    def _survivalOutlook(self, snap, state: dict, best):
+        """A losing exchange spelled out - or None while the fight is fine.
+
+        The pick always names a move and the prompt says the model needs a
+        reason to disobey it, so a model that is losing keeps attacking right
+        up to the faint - nothing in its world ever says the word "run". When
+        the same damage math behind the pick projects that we faint first,
+        that projection IS the recommendation, and it has to come from the
+        calculator with the same authority as the move picks do.
+        """
+        healthy = [p for p in (state.get("party") or []) if p.get("hp", 0) > 0]
+        backup = len(healthy) > 1
+
+        # Fainted is its own screen, and "run" is not on it. Say what the game
+        # is actually waiting for instead of advice that can't be followed.
+        if snap.you.current_hp <= 0:
+            if backup:
+                name = healthy[0].get("nickname") or healthy[0].get(
+                    "species_name") or "your next Pokemon"
+                return (f"CALCULATOR'S PICK: switch {name} - your active "
+                        f"Pokemon has fainted; the game is waiting for the "
+                        f"next one.")
+            return ("CALCULATOR'S PICK: none - your last Pokemon has fainted "
+                    "and this battle is lost. Press a to click through; you "
+                    "will wake up healed at the last place you rested.")
+
+        foeRows = [r for r in build_rows(self.battle, snap.foe, snap.you,
+                                         move_names(snap.foe_raw), snap.foe_raw)
+                   if r.is_damaging and r.expected > 0]
+        if not foeRows:
+            return None                       # the foe cannot hurt us
+        foeBest = foeRows[0]
+
+        # ceil() without floats: turns each side needs at the expected rate.
+        theirTurns = -(-snap.you.current_hp // max(1, round(foeBest.expected)))
+        ourTurns = (-(-snap.foe.current_hp // max(1, round(best.expected)))
+                    if best is not None and best.expected > 0 else 99)
+        weMoveFirst = effective_speed(snap.you) > effective_speed(snap.foe)
+
+        # Two ways to be losing. The race: they KO us in fewer turns than we
+        # KO them. The gamble: their best hit can end us THIS turn and we
+        # cannot guarantee ending them first - a 95% move or a low damage
+        # roll is a coin toss with a faint on the wrong face, and expected
+        # values don't faint, Pokemon do.
+        foeMaxHit = max(r.result.max_damage for r in foeRows)
+        dangerNow = foeMaxHit >= snap.you.current_hp
+        finishNow = (weMoveFirst and best is not None
+                     and best.accuracy >= 0.999
+                     and best.result.min_damage >= snap.foe.current_hp)
+        losing = (theirTurns < ourTurns
+                  or (theirTurns == ourTurns and not weMoveFirst)
+                  or (dangerNow and not finishNow))
+        if not losing:
+            return None
+
+        wild = self._wildBattle()
+
+        if dangerNow and not finishNow:
+            math = (f"the foe's next hit can do {foeMaxHit} and you have "
+                    f"{snap.you.current_hp} HP - one unlucky turn ends you")
+        else:
+            math = (f"the foe KOs you in ~{theirTurns} turn(s) but you need "
+                    f"~{ourTurns if ourTurns < 99 else '?'} to KO it"
+                    + ("" if weMoveFirst else ", and it moves first"))
+
+        if wild is False:                     # trainer: fleeing is not legal
+            if backup:
+                return (f"CALCULATOR'S PICK: switch - {math}. You cannot flee "
+                        f"a trainer battle, but a `switch` to a healthier "
+                        f"Pokemon changes the math.")
+            if best is None:
+                return None
+            heals = self._healingItems(state)
+            if heals:
+                return (f"CALCULATOR'S PICK: {best.move.name}, but WARNING: "
+                        f"{math}, and you have nothing to switch to. A "
+                        f"{heals[0]} from the `bag` is the only way to change "
+                        f"this outcome.")
+            return (f"CALCULATOR'S PICK: {best.move.name}, but WARNING: "
+                    f"{math}, you have nothing to switch to and NO healing "
+                    f"items in the bag. Do your best damage - and after this, "
+                    f"buy Potions at a Poke Mart before fighting anyone else.")
+
+        verb = "run" if wild else "run (if this is a wild Pokemon)"
+        if backup:
+            return (f"CALCULATOR'S PICK: {verb} or switch - {math}. This "
+                    f"fight is not worth a faint.")
+        return (f"CALCULATOR'S PICK: {verb} - {math}, and this is your LAST "
+                f"healthy Pokemon. Fainting here means blacking out and "
+                f"losing money. Live to fight something smaller.")
 
     def _checkPendingMove(self, state: dict, inBattle: bool) -> str:
         """Confirm the move we selected is the move whose PP went down.

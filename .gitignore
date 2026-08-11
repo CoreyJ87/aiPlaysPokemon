@@ -81,6 +81,7 @@ target/
 # IPython
 profile_default/
 ipython_config.py
+runs/*
 
 # pyenv
 #   For a library or package, you might want to ignore these files since the code is
@@ -229,3 +230,8 @@ __marimo__/
 
 # The player's latest screenshot, since that will always be changing
 screenshot.png
+.DS_Store
+Pokemon - Leaf Green Version (U) (V1.1).gba
+Pokemon - Leaf Green Version (U) (V1.1).sav
+1636 - Pokemon Fire Red (U)(Squirrels).gba
+!runs/watch.py

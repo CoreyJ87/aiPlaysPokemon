@@ -1,0 +1,22 @@
+{
+    "venvPath": ".",
+    "venv": ".venv",
+    "extraPaths": [
+        "mGBA",
+        "locationTracking",
+        "battle",
+        "textAnalysis",
+        "avatar"
+    ],
+    "exclude": [
+        ".venv",
+        "runs"
+    ],
+    "typeCheckingMode": "standard",
+    "reportOptionalMemberAccess": false,
+    "reportOptionalSubscript": false,
+    "reportAttributeAccessIssue": false,
+    "reportArgumentType": false,
+    "reportCallIssue": false,
+    "reportIndexIssue": false
+}

@@ -38,6 +38,7 @@ Output:
 import json
 import os
 import heapq
+import time
 from collections import defaultdict, deque
 
 
@@ -127,6 +128,17 @@ TILE_COSTS = {
     LEDGE_LEFT: 1.0,
     LEDGE_RIGHT: 1.0,
 }
+
+# Surcharge for a tile something recently refused to let us onto (an NPC,
+# usually). High enough that any reasonable detour wins, finite so that a
+# tile which really is the only way through still gets attempted once the
+# alternatives are exhausted. Added on top of the tile's own cost, so the
+# heuristic stays admissible (costs only ever go up).
+AVOID_PENALTY = 8.0
+# How long a blocked report stays live. NPCs wander on a timer measured in
+# seconds; by the time this expires whoever was in the way has usually moved,
+# and a stale entry would only make routes weirdly crooked.
+AVOID_TTL = 45.0
 
 # Direction vectors
 DIRECTIONS = {
@@ -231,6 +243,12 @@ class Pathfinder:
         self.landmarks = {}     # landmarkId -> {map, tile, label}
         self.instances = {}     # instanceId -> {template, label, homeMap, returnTile}
         self.mapGraph = defaultdict(list)  # mapName -> [(neighborMap, connection)]
+
+        # Tiles the navigator reported stepping into and bouncing off -
+        # almost always an NPC standing there. (mapName, col, row) -> expiry.
+        # Consulted as a cost surcharge in _searchTiles, so replans actually
+        # route around whoever is in the way instead of shoving them forever.
+        self.avoid = {}
 
         # Semantic indexes (built from tile data) for high-level queries.
         self.itemIndex = defaultdict(list)      # itemName(lower) -> [(map, col, row)]
@@ -463,6 +481,26 @@ class Pathfinder:
             return None
 
         return self._pathToDirections(path)
+
+    def avoidTile(self, mapName, tile, ttl=AVOID_TTL):
+        """Mark a tile as recently-blocked so replans route around it.
+
+        Called by the navigator when a step into ``tile`` bounced. The mark
+        is a cost surcharge, not a wall, and it expires after ``ttl`` seconds
+        - NPCs move, and yesterday's roadblock is just a tile.
+        """
+        self.avoid[(mapName, tuple(tile)[0], tuple(tile)[1])] = time.time() + ttl
+
+    def _avoidSurcharge(self, mapName, tile):
+        """Extra cost for a recently-blocked tile; prunes expired marks."""
+        if not self.avoid:
+            return 0.0
+        now = time.time()
+        expired = [k for k, t in self.avoid.items() if t <= now]
+        for k in expired:
+            del self.avoid[k]
+        key = (mapName, tile[0], tile[1])
+        return AVOID_PENALTY if key in self.avoid else 0.0
 
     def findPath(self, fromMap, fromTile, toMap, toTile, capabilities=None,
                  warpStack=None):
@@ -826,7 +864,8 @@ class Pathfinder:
             # (an item, an NPC) can be stepped onto as the final move.
             for neighbor, tileType in self._walkableNeighbors(
                     grid, current, capabilities, extraGoals=goals):
-                moveCost = TILE_COSTS.get(tileType, 1.0)
+                moveCost = (TILE_COSTS.get(tileType, 1.0)
+                            + self._avoidSurcharge(mapName, neighbor))
                 tentativeG = gScore[current] + moveCost
 
                 if tentativeG < gScore.get(neighbor, float('inf')):

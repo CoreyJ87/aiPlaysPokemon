@@ -117,6 +117,12 @@ STEP_ANIMATION = 0.30
 # map id actually changes. One tap the next time we cross the same threshold.
 WARP_ENTRY_POLLS = 24
 WARP_SETTLE_POLLS = 20   # ~1s of "has the arrival animation finished yet"
+# Escalators (and a few scripted stairs) play a ride animation for several
+# seconds AFTER the avatar has stepped onto the warp tile, and only then flip
+# the map id. Stepping onto a tile the grid calls solid is the tell - that
+# can't happen any other way - so when it does, wait this much longer for the
+# map to change before calling the entry a failure.
+WARP_RIDE_POLLS = 120    # x SETTLE_DELAY = ~6s
 
 # A warp fade blanks the screen for longer than the step that triggered it, and
 # a flat frame is deliberately unmatchable, so give the fade time to clear
@@ -689,7 +695,20 @@ class Navigator:
                 self._tap(direction)
                 self.facing = direction
                 after = self._awaitChange(before, WARP_ENTRY_POLLS)
-                if after is not None and after[:2] != before[:2]:
+                if after is None:
+                    continue
+                if after[:2] == before[:2] and after != before:
+                    # We MOVED but the map didn't change - we are standing on
+                    # a tile the grid calls solid, which only a warp allows.
+                    # Escalators ride for seconds before the map id flips, so
+                    # give this one the long wait it needs.
+                    for _ in range(WARP_RIDE_POLLS):
+                        time.sleep(SETTLE_DELAY)
+                        now = self._ramPos()
+                        if now is not None and now[:2] != before[:2]:
+                            after = now
+                            break
+                if after[:2] != before[:2]:
                     if (mapName, tile) not in self._warpEntry:
                         print(f'navigator: {mapName} {tile} -> {targetMap} '
                               f'needs a {direction} press to trigger; '

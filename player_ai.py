@@ -2532,6 +2532,7 @@ class PlayerAI:
         # make `--turns 3` mean "stop at turn 3, i.e. immediately".
         taken = 0
         wasPaused = False
+        connFails = 0
         try:
             while maxTurns is None or taken < maxTurns:
                 if self.inbox is not None and self.inbox.stopped:
@@ -2548,11 +2549,23 @@ class PlayerAI:
                 try:
                     self.step()
                     taken += 1
+                    connFails = 0
                 except (MGBAError, ValueError) as exc:
                     print(f"Turn failed: {exc}")
                 except ConnectionError as exc:
-                    print(f"Lost the emulator: {exc}")
-                    break
+                    # The emulator socket and the Ollama HTTP client both
+                    # surface here, and a remote model's ingress WILL blink
+                    # for a moment some afternoon - that must not end a
+                    # thousand-turn run. Back off and try again; only a
+                    # dead-for-minutes connection is worth quitting over.
+                    connFails += 1
+                    if connFails > 12:
+                        print(f"Connection lost for good: {exc}")
+                        break
+                    wait = min(60, 5 * connFails)
+                    print(f"Connection hiccup ({connFails}/12): {exc} - "
+                          f"retrying in {wait}s")
+                    time.sleep(wait)
                 except ollama.ResponseError as exc:
                     print(f"Ollama refused the request: {exc}")
                     break

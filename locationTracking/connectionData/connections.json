@@ -705,10 +705,10 @@
      "toMap": "3-21-Route3",
      "toTile": [
       0,
-      9
+      10
      ],
      "direction": "east",
-     "width": 4
+     "width": 3
     },
     {
      "type": "door",
@@ -993,7 +993,7 @@
      "type": "edge",
      "fromTile": [
       0,
-      9
+      10
      ],
      "toMap": "3-2-PewterCity",
      "toTile": [
@@ -1001,7 +1001,7 @@
       20
      ],
      "direction": "west",
-     "width": 4
+     "width": 3
     },
     {
      "type": "edge",

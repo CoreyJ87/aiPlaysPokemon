@@ -384,9 +384,14 @@ COMMANDS = (
     Command("switch", "switch <pokemon>",
             "Send out a different Pokemon from your party.",
             aliases=("swap", "sub"), context="battle"),
+    Command("item", "item <name>",
+            "Use a healing item from the bag on your active Pokemon, e.g. "
+            "`item potion`. Works the bag menus for you; costs your turn.",
+            aliases=("potion", "use_item", "medicine"), context="battle"),
     Command("bag", "bag",
-            "Open the bag in battle, then use `press` to pick an item.",
-            aliases=("item", "items"), context="battle"),
+            "Open the bag in battle, then use `press` to pick something "
+            "yourself. For healing, `item <name>` does it all in one step.",
+            aliases=("items", "backpack"), context="battle"),
     Command("run", "run",
             "Try to flee the battle. Only works against wild Pokemon.",
             aliases=("flee", "escape"), context="battle"),
@@ -958,6 +963,70 @@ class Actions:
         self._chooseAction(ACTION_BAG)
         return ("opened the bag in battle. Use `press` with up/down/a to pick an "
                 "item, or `press b` to back out.")
+
+    def item(self, args: list) -> str:
+        """Use something from the ITEMS pocket on the active Pokemon.
+
+        The same verified bag drive as `throw`, pointed at the healing shelf:
+        every hop read back from gBagMenuState instead of counted out blind.
+        """
+        obs = self._requireBattle()
+        pocket_items = (obs.state.get("bag") or {}).get("items") or []
+        rows = [(it.get("name", ""), i) for i, it in enumerate(pocket_items)
+                if it.get("quantity", 0) > 0]
+        if not rows:
+            raise ActionError("the ITEMS pocket is empty - buy Potions at a "
+                              "Poke Mart when you are out of battle")
+        if not args:
+            raise ActionError("item needs a name, e.g. `item potion`. You "
+                              "have: " + ", ".join(n for n, _ in rows))
+        hit = _bestMatch(" ".join(args), rows)
+        if hit is None:
+            raise ActionError(f"no {' '.join(args)!r} in the ITEMS pocket. "
+                              f"You have: " + ", ".join(n for n, _ in rows))
+        name, index = hit
+
+        overworldCb = str((obs.screen or {}).get("callback2", ""))
+        self._chooseAction(ACTION_BAG)
+        for _ in range(12):                 # bag fade-in
+            time.sleep(0.5)
+            try:
+                cb = str(self.client.screen().get("callback2", ""))
+            except MGBAError:
+                continue
+            if cb and cb != overworldCb:
+                break
+        else:
+            raise ActionError("the bag never opened - `wait 1` and try again")
+        time.sleep(0.8)
+
+        ITEMS_POCKET = 0
+        for _ in range(6):
+            pocket = self._peekU16(BAG_STATE_ADDR + 0x06)
+            if pocket == ITEMS_POCKET:
+                break
+            self._menuTap("LEFT" if pocket > ITEMS_POCKET else "RIGHT")
+            time.sleep(0.5)
+        else:
+            self._menuTap("B", 2)
+            raise ActionError("could not reach the ITEMS pocket - backed "
+                              "out of the bag")
+        for _ in range(3 * max(1, index) + 3):
+            at = (self._peekU16(BAG_STATE_ADDR + 0x08 + 2 * ITEMS_POCKET)
+                  + self._peekU16(BAG_STATE_ADDR + 0x0E + 2 * ITEMS_POCKET))
+            if at == index:
+                break
+            self._menuTap("DOWN" if at < index else "UP")
+            time.sleep(0.25)
+
+        self._menuTap("A")                  # select the item
+        time.sleep(0.8)
+        self._menuTap("A")                  # USE (default cursor position)
+        time.sleep(1.0)
+        self._menuTap("A")                  # party screen: active mon preselected
+        return (f"using {name} on your active Pokemon - the foe gets a free "
+                f"move while you do. Check the HP number on the next "
+                f"screenshot to confirm it worked")
 
     def run(self, args: list) -> str:
         self._requireBattle()
@@ -2112,6 +2181,25 @@ class PlayerAI:
                 "with `press`.")
             return
 
+        # The victory/defeat dialog runs under the battle callback with the
+        # move table long gone; showing the matchup there sends the model
+        # into `use` and `wait` while the game waits for A. Read the text
+        # actually on screen and say so.
+        endText = self.actions._battleText()
+        endLow = endText.lower()
+        if any(k in endLow for k in ("for winning", "got $", "exp. points",
+                                     "grew to", "fainted!", "beat me",
+                                     "defeated", "whited out")):
+            firstLine = endText.strip().split("\n")[0][:60]
+            obs.battleReport = (
+                f"The fight is being RESOLVED - the game is showing "
+                f"'{firstLine}' and is waiting for a button. Moves and menus "
+                f"will not respond here.")
+            obs.recommendation = ("RECOMMENDED: press a - repeat until you "
+                                  "are back in the world or the next Pokemon "
+                                  "comes out")
+            return
+
         snap = Snapshot.capture(_CachedState(state))
         obs.battleReport = _captureText(print_matchup, self.battle, snap)
         if not snap.ready:
@@ -2123,8 +2211,16 @@ class PlayerAI:
         rows = build_rows(self.battle, snap.you, snap.foe, names, snap.you_raw)
         best = next((r for r in rows if r.is_damaging), None)
         outlook = self._survivalOutlook(snap, state, best)
+        catch = self._catchOpportunity(snap, state)
         if outlook is not None:
-            obs.recommendation = outlook
+            obs.recommendation = outlook + (("\n" + catch) if catch else "")
+        elif catch:
+            # A catchable foe outranks the damage table: the pick IS throw,
+            # with the best move only as the fallback. Appended after the
+            # pick it reads as a footnote and never gets taken.
+            alt = (f" If you would rather fight it: {best.move.name}."
+                   if best is not None else "")
+            obs.recommendation = catch + alt
         elif best is not None:
             obs.recommendation = (
                 f"CALCULATOR'S PICK: {best.move.name} - highest expected damage "
@@ -2134,10 +2230,18 @@ class PlayerAI:
         elif rows:
             obs.recommendation = ("CALCULATOR'S PICK: none of your moves damage "
                                   "this foe. Consider switching or running.")
-        note = self._catchOpportunity(snap, state)
-        if note:
-            obs.recommendation = ((obs.recommendation + "\n")
-                                  if obs.recommendation else "") + note
+
+        # Mid-fight healing exists but nothing ever points at it: the model
+        # will ride 1 HP into a Tackle rather than open the bag unprompted.
+        if outlook is None and snap.you.max_hp > 0:
+            share = snap.you.current_hp / snap.you.max_hp
+            heals = self._healingItems(state)
+            if 0 < share <= 0.35 and heals:
+                obs.recommendation = ((obs.recommendation + "\n")
+                                      if obs.recommendation else "") + (
+                    f"LOW HP: you are at {share:.0%}. `item "
+                    f"{heals[0].lower()}` heals now and costs one turn - "
+                    f"cheaper than fainting.")
 
     def _catchOpportunity(self, snap, state: dict) -> str:
         """One line when throwing a ball beats attacking, else empty.

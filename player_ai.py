@@ -148,6 +148,12 @@ ACTION_FIGHT, ACTION_BAG, ACTION_POKEMON, ACTION_RUN = 0, 1, 2, 3
 ACTION_CURSOR_ADDR = 0x02023FF8
 MOVE_CURSOR_ADDR = 0x02023FFC
 
+# gBagMenuState (include/item_menu.h): +0x06 u16 pocket (0 items, 1 key
+# items, 2 poke balls), +0x08 u16 itemsAbove[3], +0x0E u16 cursorPos[3].
+# The battle BAG is the regular bag, so one struct serves both.
+BAG_STATE_ADDR = 0x0203ACFC
+BALL_POCKET = 2
+
 # sShopData (src/shop.c in pret/pokefirered; same address FR 1.0 / LG 1.1):
 #   +0x04 const u16 *itemList   +0x0C u16 selectedRow  +0x0E u16 scrollOffset
 #   +0x10 u16 itemCount         +0x14 u16 maxQuantity
@@ -369,6 +375,10 @@ COMMANDS = (
     Command("run", "run",
             "Try to flee the battle. Only works against wild Pokemon.",
             aliases=("flee", "escape"), context="battle"),
+    Command("throw", "throw [ball name]",
+            "Throw a Poke Ball at the wild Pokemon to catch it. Works best "
+            "when it is weakened or asleep. Wild battles only.",
+            aliases=("ball", "catch_ball"), context="battle"),
     Command("note", "note <something worth remembering>",
             "Write one short fact into your memory so you still have it in a "
             "hundred turns: where a door was, what an NPC told you, what did "
@@ -903,6 +913,69 @@ class Actions:
         self._requireBattle()
         self._chooseAction(ACTION_RUN)
         return "tried to run from the battle"
+
+    def throw(self, args: list) -> str:
+        """BAG -> ball pocket -> ball -> USE, every hop read back from RAM."""
+        obs = self._requireBattle()
+        if self._wildBattle() is False:
+            raise ActionError("you can't catch a trainer's Pokemon - balls "
+                              "only work on wild ones")
+        balls = (obs.state.get("bag") or {}).get("poke_balls") or []
+        balls = [b for b in balls if b.get("quantity", 0) > 0]
+        if not balls:
+            raise ActionError("no Poke Balls in the bag - buy some at a "
+                              "Poke Mart first")
+        index = 0
+        if args:
+            hit = _bestMatch(" ".join(args),
+                             [(b.get("name", ""), i)
+                              for i, b in enumerate(balls)])
+            if hit is None:
+                raise ActionError(f"no {' '.join(args)!r} in the ball "
+                                  f"pocket. You have: "
+                                  f"{', '.join(b['name'] for b in balls)}")
+            index = hit[1]
+        name = balls[index].get("name", "ball")
+
+        overworldCb = str((obs.screen or {}).get("callback2", ""))
+        self._chooseAction(ACTION_BAG)
+        for _ in range(12):                 # bag fade-in
+            time.sleep(0.5)
+            try:
+                cb = str(self.client.screen().get("callback2", ""))
+            except MGBAError:
+                continue
+            if cb and cb != overworldCb:
+                break
+        else:
+            raise ActionError("the bag never opened - `wait 1` and try again")
+        time.sleep(0.8)
+
+        # Pocket, then item row - both verified against gBagMenuState.
+        for _ in range(6):
+            pocket = self._peekU16(BAG_STATE_ADDR + 0x06)
+            if pocket == BALL_POCKET:
+                break
+            self._menuTap("RIGHT" if pocket < BALL_POCKET else "LEFT")
+            time.sleep(0.5)
+        else:
+            self._menuTap("B", 2)
+            raise ActionError("could not reach the POKE BALLS pocket - "
+                              "backed out of the bag")
+        for _ in range(3 * max(1, index)):
+            at = (self._peekU16(BAG_STATE_ADDR + 0x08 + 2 * BALL_POCKET)
+                  + self._peekU16(BAG_STATE_ADDR + 0x0E + 2 * BALL_POCKET))
+            if at == index:
+                break
+            self._menuTap("DOWN" if at < index else "UP")
+            time.sleep(0.25)
+
+        self._menuTap("A")                  # select the ball
+        time.sleep(0.8)
+        self._menuTap("A")                  # USE (default cursor position)
+        return (f"threw a {name}! Watch the next screenshot: if it escapes "
+                f"the ball, pick a move; if the naming keyboard appears, it "
+                f"was CAUGHT - `name` it or press b to skip naming")
 
     # ---- memory and planning ----------------------------------------------
 
@@ -1840,6 +1913,35 @@ class PlayerAI:
         elif rows:
             obs.recommendation = ("CALCULATOR'S PICK: none of your moves damage "
                                   "this foe. Consider switching or running.")
+        note = self._catchOpportunity(snap, state)
+        if note:
+            obs.recommendation = ((obs.recommendation + "\n")
+                                  if obs.recommendation else "") + note
+
+    def _catchOpportunity(self, snap, state: dict) -> str:
+        """One line when throwing a ball beats attacking, else empty.
+
+        The model has a `throw` command but nothing in its world ever
+        suggests using it - the same gap that kept `run` unused. Catching
+        is how a one-Squirtle run becomes a team, so the moment is worth
+        calling out: wild, weakened, a ball in the bag, room in the party.
+        """
+        if snap.you is None or snap.foe is None or snap.foe.max_hp <= 0:
+            return ""
+        party = state.get("party") or []
+        balls = [b for b in (state.get("bag") or {}).get("poke_balls") or []
+                 if b.get("quantity", 0) > 0]
+        share = snap.foe.current_hp / snap.foe.max_hp
+        if (not balls or len(party) >= 6 or share > 0.5
+                or self._wildBattle() is False):
+            return ""
+        species = snap.foe.species
+        owned = {(p.get("species_name") or "").upper() for p in party}
+        dup = " (you already have one)" if species.upper() in owned else ""
+        return (f"CATCH CHANCE: this {species} is at {share:.0%} HP and you "
+                f"have {balls[0]['quantity']}x {balls[0]['name']}{dup}. "
+                f"`throw` catches it and grows your team - status like sleep "
+                f"or paralysis helps.")
 
     def _wildBattle(self):
         """True for a wild battle, False for a trainer one, None if unreadable.

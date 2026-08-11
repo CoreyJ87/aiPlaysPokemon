@@ -121,7 +121,7 @@ def drive_to_overworld(c: MGBAClient):
     """Press through intro movie → title → CONTINUE → recap → overworld."""
     for _ in range(90):
         name = screen_name(c)
-        if name == "overworld":
+        if name == "overworld" or name.startswith("battle"):
             break
         c.tap(INTRO_BUTTON.get(name, "A"), 12)
         time.sleep(0.7)

@@ -433,13 +433,14 @@ class Actions:
     """
 
     def __init__(self, nav: Navigator, cfg: Config, memory=None, roster=None,
-                 data=None):
+                 data=None, battle=None):
         self.nav = nav
         self.cfg = cfg
         self.client = nav.client
         self.memory = memory        # objectives.Memory, for `note`
         self.roster = roster        # matchup.Roster, for `check`
         self.data = data            # damage_calc.GameData, for `check`
+        self.battle = battle        # live_calc.Session, for `learn`
         # Set by PlayerAI each turn so battle commands can name real moves.
         self.observation: "Observation | None" = None
         self.turn = 0               # for stamping notes
@@ -1701,7 +1702,8 @@ class PlayerAI:
                      if cfg.useObjectives else ObjectiveBook())
         self.memory = Memory.load(cfg.memoriesPath)
         self.actions = Actions(self.nav, cfg, memory=self.memory,
-                               roster=self.roster, data=self.battle.data)
+                               roster=self.roster, data=self.battle.data,
+                               battle=self.battle)
 
         # Turns continue across runs, so "you have been on this objective for
         # 40 turns" survives a restart - which is exactly when it matters.
@@ -2080,12 +2082,12 @@ class PlayerAI:
         # A pending move-learn freezes the battle on a prompt chain that no
         # other tool understands - `use` fails, `wait` changes nothing. Catch
         # it before anything else and point at the one command built for it.
-        pending = self._learnPending(state)
+        pending = self.actions._learnPending(state)
         if pending is not None:
             mon, newName = pending
             monName = ((mon or {}).get("nickname")
                        or (mon or {}).get("species") or "Your Pokemon")
-            choice = self._forgetChoice(mon, newName) if mon else None
+            choice = self.actions._forgetChoice(mon, newName) if mon else None
             plan = (f"forget {choice[1]} ({choice[2]}) and learn "
                     f"{newName or 'the new move'}"
                     if choice else "pick a move to forget")

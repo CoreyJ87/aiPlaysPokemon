@@ -726,19 +726,26 @@ class Actions:
         moneyBefore = (state.get("player") or {}).get("money", 0)
 
         # Clerk greeting -> BUY. The BUY/SELL/QUIT menu is created fresh each
-        # time with its cursor on BUY, so one A selects it - no navigation.
-        self._menuTap("A")
-        for _ in range(4):
-            time.sleep(0.7)
-            if "help you" in self._dialogText():
-                break
+        # time with its cursor on BUY, so A presses walk straight in. Text
+        # polling (gStringVar4) is too stale to sequence this; the reliable
+        # signal is callback2 - the buy list is its own screen, so the
+        # callback leaving the overworld means the list is open.
+        overworld = str((self.observation.screen or {}).get("callback2", ""))
+        opened = False
+        for _ in range(6):
             self._menuTap("A")
-        else:
-            raise ActionError("no shop clerk answered - stand directly in "
-                              "front of the counter, facing the clerk, and "
-                              "try again")
-        self._menuTap("A")           # BUY
-        time.sleep(1.2)              # list fade-in
+            time.sleep(0.9)
+            try:
+                cb = str(self.client.screen().get("callback2", ""))
+            except MGBAError:
+                cb = overworld
+            if cb and cb != overworld:
+                opened = True
+                break
+        if not opened:
+            raise ActionError("no shop opened - stand directly in front of "
+                              "the counter, facing the clerk, and try again")
+        time.sleep(1.0)              # list fade-in
 
         # What is for sale, straight from the shop's item list in ROM.
         listPtr = self._peekU32(SHOP_DATA_ADDR + 0x04)
@@ -771,29 +778,65 @@ class Actions:
             raise ActionError("the shop cursor is not responding - press b "
                               "to back out and try again")
 
-        self._menuTap("A")           # opens the quantity spinner at 1
-        time.sleep(0.6)
+        self._menuTap("A")           # select the item
+        # "POTION? Certainly. How many would you like?" types out first, and
+        # the spinner eats every press until it has finished - wait for it.
+        for _ in range(10):
+            time.sleep(0.5)
+            if "how many" in self._dialogText():
+                break
+        time.sleep(0.4)
+
         maxQty = self._peekU16(SHOP_DATA_ADDR + 0x14)
-        bought = min(qty, maxQty) if maxQty else qty
-        self._menuTap("UP", bought - 1)
-        self._menuTap("A")           # "that will be $X" -> YES is default
-        time.sleep(0.6)
-        self._menuTap("A")
+        target = min(qty, maxQty) if maxQty else qty
+        # sShopData.itemPrice is the running total, which makes the spinner
+        # verifiable: unit price at x1, then every UP must move the total.
+        unit = self._peekU32(SHOP_DATA_ADDR + 0x08)
+        for _ in range(3 * target):
+            if unit and self._peekU32(SHOP_DATA_ADDR + 0x08) >= unit * target:
+                break
+            self._menuTap("UP")
+            time.sleep(0.2)
+        bought = (self._peekU32(SHOP_DATA_ADDR + 0x08) // unit if unit
+                  else target)
+
+        self._menuTap("A")           # -> "and you want N. $X. Okay?"
+        time.sleep(1.2)
+        self._menuTap("A")           # YES
+        time.sleep(2.0)
+        self._menuTap("A")           # "Here you are! Thank you!"
         time.sleep(1.0)
-        self._menuTap("A")           # "Here you are!"
 
-        # Leave: list -> BUY/SELL menu -> "Please come again".
+        # Leave: list -> "anything else?" menu -> "Please come again". B all
+        # the way out: B backs out of menus AND dismisses finished text, but
+        # never selects - an A here can land on the reopened BUY/SELL menu
+        # and start the whole conversation over.
         self._menuTap("B", 2)
-        self._menuTap("A")
+        for _ in range(6):
+            time.sleep(0.8)
+            try:
+                if not measureScreen(self.client.screenshot())["open"]:
+                    break
+            except (MGBAError, ValueError):
+                break
+            self._menuTap("B")
 
-        after = self.client.game_state()
-        spent = moneyBefore - (after.get("player") or {}).get("money", 0)
+        # The money HUD (and the RAM behind it) settles a beat after the
+        # thank-you line; don't declare failure on a race.
+        spent, moneyAfter = 0, moneyBefore
+        for _ in range(4):
+            moneyAfter = (self.client.game_state().get("player")
+                          or {}).get("money", moneyBefore)
+            spent = moneyBefore - moneyAfter
+            if spent > 0:
+                break
+            time.sleep(0.8)
         if spent <= 0:
             return (f"walked the menus but no money moved - the purchase "
                     f"did not go through. Check the screen with `press`")
         note = "" if bought == qty else f" (shop capped it at {bought})"
         return (f"bought {bought}x {name} for ${spent}{note}; "
-                f"${after['player']['money']} left")
+                f"${moneyAfter} left")
 
     # ---- battle -----------------------------------------------------------
 

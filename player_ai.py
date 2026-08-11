@@ -179,6 +179,11 @@ MOVE_TABLE_BY_GAME = {
     "LeafGreen v1.1": 0x082470E0,
 }
 MOVE_NAME_SIZE = 13
+# Species base stats in ROM (28-byte entries); catch rate is the byte at +8.
+BASE_STATS_BY_GAME = {
+    "LeafGreen v1.1": 0x082547D0,
+}
+BASE_STATS_ENTRY = 28
 LEARN_PROMPT_MARKERS = ("trying to learn", "make room for",
                         "which move should be forgotten", "stop learning")
 
@@ -1907,8 +1912,37 @@ class PlayerAI:
 
         obs.note = " ".join(n for n in (self._checkPendingMove(state, inBattle),
                                         self._lowHpAlert(state, inBattle),
+                                        self._teamAdvice(state, inBattle),
                                         self._repeatAlert()) if n)
         return obs
+
+    def _teamAdvice(self, state: dict, inBattle: bool) -> str:
+        """A standing reminder that a one-Pokemon run is one crit from over.
+
+        Nothing in the objectives says 'build a team', so the model never
+        does - it walks a lone starter into cave after cave. Name the local
+        species so `catch` is a concrete next action, not a concept.
+        """
+        if inBattle:
+            return ""
+        party = [p for p in (state.get("party") or []) if p.get("max_hp")]
+        if not party or len(party) >= 3:
+            return ""
+        balls = [b for b in (state.get("bag") or {}).get("poke_balls") or []
+                 if b.get("quantity", 0) > 0]
+        if not balls:
+            return ""
+        try:
+            local = list(self.nav.species())[:4]
+        except Exception:
+            local = []
+        if not local:
+            return ""
+        return (f"TEAM: you have only {len(party)} Pokemon - one bad fight "
+                f"ends in a blackout. `catch {local[0].lower()}` walks to "
+                f"grass and finds one (also nearby: "
+                f"{', '.join(s.lower() for s in local[1:])}), and in a wild "
+                f"battle `throw` a ball once it is weakened.")
 
     def _lowHpAlert(self, state: dict, inBattle: bool) -> str:
         """Warn when the party can't take a hit, before grass proves it.
@@ -2278,20 +2312,65 @@ class PlayerAI:
         """
         if snap.you is None or snap.foe is None or snap.foe.max_hp <= 0:
             return ""
+        if snap.foe.current_hp <= 0:
+            return ""
         party = state.get("party") or []
         balls = [b for b in (state.get("bag") or {}).get("poke_balls") or []
                  if b.get("quantity", 0) > 0]
-        share = snap.foe.current_hp / snap.foe.max_hp
-        if (not balls or len(party) >= 6 or share > 0.5
-                or self._wildBattle() is False):
+        if not balls or len(party) >= 6 or self._wildBattle() is False:
             return ""
         species = snap.foe.species
         owned = {(p.get("species_name") or "").upper() for p in party}
-        dup = " (you already have one)" if species.upper() in owned else ""
-        return (f"CATCH CHANCE: this {species} is at {share:.0%} HP and you "
-                f"have {balls[0]['quantity']}x {balls[0]['name']}{dup}. "
-                f"`throw` catches it and grows your team - status like sleep "
-                f"or paralysis helps.")
+        if species.upper() in owned:
+            return ""
+        qty, ball = balls[0]["quantity"], balls[0]["name"]
+        odds = self._catchOdds(state, snap)
+        share = snap.foe.current_hp / snap.foe.max_hp
+        # The model obeys exactly one dialect - "CALCULATOR'S PICK: <verb>".
+        # Seventeen consecutive turns of a "CATCH CHANCE:" footnote on a 7%
+        # Zubat produced seventeen Tackles, so when catching is the right
+        # play it has to BE the pick, phrased like every pick it follows.
+        if odds is not None and odds >= 0.30:
+            return (f"CALCULATOR'S PICK: throw - a {ball} catches this "
+                    f"{species} about {odds:.0%} of the time RIGHT NOW, and "
+                    f"it would be a NEW member for your team of {len(party)} "
+                    f"({qty} balls in the bag). Do NOT attack - your moves "
+                    f"would knock it out. You do not have to take this "
+                    f"advice, but you need a reason not to.")
+        if odds is None and share <= 0.5:
+            return (f"CALCULATOR'S PICK: throw - this {species} is weakened "
+                    f"and would be NEW on your team ({qty}x {ball} in the "
+                    f"bag). Do NOT attack, you would probably knock it out.")
+        if odds is not None:
+            return (f"CATCH CHANCE: {species} would be new for your team, "
+                    f"but catch odds are only {odds:.0%} right now. Chip it "
+                    f"below half HP with your WEAKEST move, then `throw`.")
+        return ""
+
+    def _catchOdds(self, state: dict, snap):
+        """P(one plain ball catches the foe), from the ROM's catch rate.
+
+        Gen 3 formula, no status bonus: a = rate * (3M - 2H) / 3M, then four
+        shake checks at b = 1048560 / (16711680/a)^(1/4).
+        """
+        table = BASE_STATS_BY_GAME.get(state.get("game", ""))
+        sid = (snap.foe_raw or {}).get("species_id")
+        if not table or not sid:
+            return None
+        try:
+            rate = self.client.peek(table + BASE_STATS_ENTRY * sid + 8, 1)[0]
+        except Exception:
+            return None
+        if not rate:
+            return None
+        m, h = snap.foe.max_hp, max(1, snap.foe.current_hp)
+        a = rate * (3 * m - 2 * h) // (3 * m)
+        if a <= 0:
+            return 0.0
+        if a >= 255:
+            return 1.0
+        b = 1048560 / (16711680 / a) ** 0.25
+        return min(1.0, (b / 65536) ** 4)
 
     def _wildBattle(self):
         """True for a wild battle, False for a trainer one, None if unreadable.

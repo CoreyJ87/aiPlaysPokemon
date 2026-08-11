@@ -498,7 +498,7 @@ class Actions:
         if obs is not None and obs.dialogOpen and not obs.dialogDoubted:
             raise ActionError("there is a text box on screen - the game ignores "
                               "movement until it is cleared. Press A to advance "
-                              "it first")
+                              "dialog, or B to back out if a menu is open")
 
     # ---- overworld --------------------------------------------------------
 
@@ -573,7 +573,19 @@ class Actions:
             # still playing.
             return ""
         if after["dialog"]:
+            # A conversation advances and eventually ends; a menu (PC, shop,
+            # options) cycles under A forever. After enough presses with a box
+            # still up, say so - B backs out of menus and merely speeds up
+            # dialog, so it is safe advice either way.
+            streak = getattr(self, "_boxStreak", 0) + 1
+            self._boxStreak = streak
+            if streak >= 4:
+                return (f" - a box is STILL on screen after {streak} presses. "
+                        "If the text is not changing, this is a MENU, not "
+                        "dialog: A goes deeper in, B backs out. Press b "
+                        "until you can walk again")
             return " - there is a text box on screen now; keep pressing A"
+        self._boxStreak = 0
         if before["dialog"]:
             return " - the text box is gone; you can walk again"
         if after["ram"] != before["ram"]:

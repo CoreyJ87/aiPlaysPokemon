@@ -542,7 +542,28 @@ class Actions:
                 times = max(1, min(MAX_PRESSES, int(match.group())))
 
         before = self._worldMark()
-        self._menuTap(button, times)
+        inBattle = bool(self.observation and self.observation.inBattle)
+        stopped = ""
+        if inBattle and button in ("A", "B"):
+            # Battle boxes eat presses while the typewriter runs, and a
+            # multi-tap can blow straight through the move-learning prompt
+            # chain inside one command - which is how Bite got skipped
+            # without the model ever seeing the question. Tap one at a
+            # time, read the text between taps, and stop on that prompt.
+            done = 0
+            for _ in range(times):
+                self._menuTap(button)
+                done += 1
+                text = self._battleText().lower()
+                if any(k in text for k in LEARN_PROMPT_MARKERS):
+                    stopped = (" - STOP PRESSING: the game is asking about "
+                               "learning a new move. Use `learn` to accept "
+                               "(it picks the best move to forget) or "
+                               "`learn skip` to refuse")
+                    break
+            times = done
+        else:
+            self._menuTap(button, times)
 
         # navigator caches which way we're facing to save a tap per step. A raw
         # tap always ends facing that direction; an A/B press may have been a
@@ -550,6 +571,8 @@ class Actions:
         title = button.title()
         self.nav.facing = title if title in DIRECTIONS else None
         label = f"pressed {button}" + (f" x{times}" if times > 1 else "")
+        if stopped:
+            return label + stopped
         return label + self._pressEffect(before)
 
     def _worldMark(self) -> dict | None:
@@ -2195,8 +2218,10 @@ class PlayerAI:
                 f"The fight is being RESOLVED - the game is showing "
                 f"'{firstLine}' and is waiting for a button. Moves and menus "
                 f"will not respond here.")
-            obs.recommendation = ("RECOMMENDED: press a - repeat until you "
-                                  "are back in the world or the next Pokemon "
+            obs.recommendation = ("RECOMMENDED: `press a 4` - the box eats "
+                                  "presses while text is printing, so press "
+                                  "several times and repeat until you are "
+                                  "back in the world or the next Pokemon "
                                   "comes out")
             return
 

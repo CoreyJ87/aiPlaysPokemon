@@ -156,7 +156,7 @@ def next_run_log() -> str:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--play", action="store_true", help="start player_ai after loading in")
-    ap.add_argument("--turns", type=int, default=300)
+    ap.add_argument("--turns", type=int, default=3000)
     ap.add_argument("--model", default="qwen3-vl:8b-instruct")
     ap.add_argument("--ollama-host", default="https://ollama.synik4l.net")
     args = ap.parse_args()

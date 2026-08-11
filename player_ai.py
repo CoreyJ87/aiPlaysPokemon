@@ -675,6 +675,23 @@ class Actions:
 
     def heal(self, args: list) -> str:
         self._requireNoDialog()
+        # A full-health heal is not harmless: it walks the whole way back to
+        # the Center, and an objective hint that says "heal first" reads as
+        # eternally applicable, so gym trips turn into laps. Refuse instead.
+        try:
+            party = [p for p in (self.client.game_state().get("party") or [])
+                     if p.get("max_hp")]
+        except (MGBAError, ValueError):
+            party = []
+        BAD = ("psn", "poison", "par", "slp", "sleep", "brn", "burn",
+               "frz", "freeze")
+        if party and all(p.get("hp", 0) >= p["max_hp"]
+                         and not any(k in str(p.get("status") or "").lower()
+                                     for k in BAD)
+                         for p in party):
+            raise ActionError("your party is already at full health - you do "
+                              "not need to heal. Carry on with your objective "
+                              "instead of walking back to the Center")
         return self._describeRun(self.nav.goHeal(maxSteps=self.cfg.moveBudget))
 
     def catch(self, args: list) -> str:

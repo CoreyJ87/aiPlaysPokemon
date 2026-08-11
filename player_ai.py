@@ -72,7 +72,8 @@ for _p in (HERE / "mGBA", HERE / "battle", HERE / "locationTracking"):
 
 import ollama  # noqa: E402
 
-from mgba_client import BUTTONS, MGBAClient, MGBAError, gen3_decode  # noqa: E402
+from mgba_client import (BUTTONS, MGBAClient, MGBAError,  # noqa: E402
+                         gen3_decode, gen3_decode_text)
 from navigator import Navigator  # noqa: E402
 from pathfinder import BLOCKED, RETURN_TARGET  # noqa: E402
 from damage_calc import GameData  # noqa: E402
@@ -166,6 +167,20 @@ ITEM_TABLE_BY_GAME = {
     "LeafGreen v1.1": 0x083DAED4,
 }
 ITEM_ENTRY_SIZE = 44
+
+# Move learning at four known moves. gMoveToLearn holds the pending move id
+# while the "trying to learn" prompts run, and gDisplayedStringBattle is the
+# text actually drawn in battle - gStringVar4 goes stale there, this doesn't.
+# Move names live in ROM at 13 bytes per entry (same table the Lua server
+# reads); addresses are per-ROM like the item table above.
+DISPLAYED_STRING_ADDR = 0x0202298C
+MOVE_TO_LEARN_ADDR = 0x02024022
+MOVE_TABLE_BY_GAME = {
+    "LeafGreen v1.1": 0x082470E0,
+}
+MOVE_NAME_SIZE = 13
+LEARN_PROMPT_MARKERS = ("trying to learn", "make room for",
+                        "which move should be forgotten", "stop learning")
 
 DIRECTIONS = ("Up", "Down", "Left", "Right")
 DIR_ALIASES = {"u": "Up", "up": "Up", "n": "Up", "north": "Up",
@@ -379,6 +394,11 @@ COMMANDS = (
             "Throw a Poke Ball at the wild Pokemon to catch it. Works best "
             "when it is weakened or asleep. Wild battles only.",
             aliases=("ball", "catch_ball"), context="battle"),
+    Command("learn", "learn [skip]",
+            "Answer the 'trying to learn a move' prompt: makes room by "
+            "forgetting the weakest overlapping move, or `learn skip` to "
+            "refuse. Only when that prompt is on screen.",
+            aliases=("forget", "teach"), context="battle"),
     Command("note", "note <something worth remembering>",
             "Write one short fact into your memory so you still have it in a "
             "hundred turns: where a door was, what an NPC told you, what did "
@@ -1005,6 +1025,153 @@ class Actions:
         return (f"threw a {name}! Watch the next screenshot: if it escapes "
                 f"the ball, pick a move; if the naming keyboard appears, it "
                 f"was CAUGHT - `name` it or press b to skip naming")
+
+    # ---- move learning -----------------------------------------------------
+
+    def _battleText(self) -> str:
+        """What the battle text box is drawing right now."""
+        try:
+            return gen3_decode_text(
+                self.client.peek(DISPLAYED_STRING_ADDR, 200))
+        except (MGBAError, ValueError):
+            return ""
+
+    def _moveName(self, state: dict, moveId: int) -> str:
+        table = MOVE_TABLE_BY_GAME.get(state.get("game", ""))
+        if not table or not 0 < moveId < 512:
+            return ""
+        try:
+            return gen3_decode(
+                self.client.peek(table + MOVE_NAME_SIZE * moveId,
+                                 MOVE_NAME_SIZE)).strip()
+        except (MGBAError, ValueError):
+            return ""
+
+    def _learnPending(self, state: dict):
+        """(mon, new move name) while a learn prompt is up, else None."""
+        text = self._battleText()
+        low = text.lower()
+        if not any(k in low for k in LEARN_PROMPT_MARKERS):
+            return None
+        newName = self._moveName(state, self._peekU16(MOVE_TO_LEARN_ADDR))
+        party = state.get("party") or []
+        mon = None
+        named = re.match(r"\s*([^\n]+?) is trying to learn", text)
+        if named:
+            nick = named.group(1).strip().lower()
+            mon = next((p for p in party
+                        if str(p.get("nickname") or "").lower() == nick
+                        or str(p.get("species") or "").lower() == nick), None)
+        if mon is None:
+            # later prompts in the chain don't repeat the name; the learner is
+            # the healthy party member already holding four moves
+            mon = next((p for p in party
+                        if len(p.get("moves") or []) >= 4
+                        and p.get("hp", 0) > 0), None)
+        return mon, newName
+
+    def _forgetChoice(self, mon: dict, newName: str):
+        """Which slot to sacrifice: (slot, old name, why)."""
+        def info(name):
+            mv = self.battle.resolve(name)
+            return (getattr(mv, "power", 0) or 0,
+                    str(getattr(mv, "type", "") or ""))
+        moves = [str(m.get("name") or "")
+                 for m in (mon.get("moves") or [])][:4]
+        scored = [(i, n, *info(n)) for i, n in enumerate(moves) if n]
+        if not scored:
+            return None
+        newPower, newType = info(newName)
+        if newPower:
+            outclassed = [s for s in scored
+                          if s[3] == newType and 0 < s[2] < newPower]
+            if outclassed:
+                i, n, _, _ = min(outclassed, key=lambda s: s[2])
+                return i, n, f"{newName} is a stronger {newType} attack"
+        status = [s for s in scored if s[2] == 0]
+        if status:
+            i, n, _, _ = status[0]
+            return i, n, f"{n} does no damage"
+        i, n, _, _ = min(scored, key=lambda s: s[2])
+        return i, n, f"{n} is the weakest attack"
+
+    def learn(self, args: list) -> str:
+        """Drive the four-moves learn prompt end to end.
+
+        A through the yes/no chain until the move-forget screen replaces the
+        battle callback, pick the sacrificial slot there, A back out through
+        the poof dialog - then reread the party, which is the only answer
+        that counts.
+        """
+        obs = self._requireBattle()
+        state = obs.state
+        pending = self._learnPending(state)
+        if pending is None:
+            raise ActionError("no move is waiting to be learned right now")
+        mon, newName = pending
+
+        if args and args[0].lower() in ("skip", "no", "refuse", "stop"):
+            self._menuTap("B")
+            time.sleep(0.8)
+            self._menuTap("A")              # "Stop learning X?" -> YES
+            time.sleep(0.8)
+            self._menuTap("A")
+            return f"gave up on learning {newName or 'the new move'}"
+
+        if mon is None:
+            raise ActionError("could not tell which Pokemon is learning - "
+                              "answer the prompts with `press` instead")
+        choice = self._forgetChoice(mon, newName)
+        if choice is None:
+            raise ActionError("could not read that Pokemon's moves - "
+                              "answer the prompts with `press` instead")
+        slot, oldName, why = choice
+        monName = mon.get("nickname") or mon.get("species") or "your Pokemon"
+        partyIndex = (state.get("party") or []).index(mon)
+
+        switched = False
+        for _ in range(10):
+            try:
+                cb = str(self.client.screen().get("callback2", "")).upper()
+            except MGBAError:
+                cb = ""
+            if cb and cb not in BATTLE_SCREEN_CALLBACKS:
+                switched = True
+                break
+            self._menuTap("A")
+            time.sleep(0.8)
+        if not switched:
+            raise ActionError("the move-forget screen never opened - answer "
+                              "the prompts with `press a` instead")
+
+        time.sleep(1.5)                     # summary screen fade-in
+        self._menuTap("DOWN", slot)
+        time.sleep(0.3)
+        self._menuTap("A")
+        time.sleep(1.0)
+        for _ in range(14):                 # poof + learned dialog
+            try:
+                cb = str(self.client.screen().get("callback2", "")).upper()
+            except MGBAError:
+                cb = ""
+            if (cb in BATTLE_SCREEN_CALLBACKS
+                    and "learned" in self._battleText().lower()):
+                break
+            self._menuTap("A")
+            time.sleep(0.8)
+
+        try:
+            fresh = (self.client.game_state().get("party") or [])[partyIndex]
+            have = [str(m.get("name") or "").lower()
+                    for m in fresh.get("moves") or []]
+        except (MGBAError, ValueError, IndexError):
+            have = []
+        if newName and newName.lower() in have:
+            return (f"{monName} forgot {oldName} and learned {newName} "
+                    f"({why})")
+        return (f"walked through the menus to learn {newName or 'the move'} "
+                f"over {oldName}, but the party does not show it yet - look "
+                f"at the screen and finish any dialog with `press a`")
 
     # ---- memory and planning ----------------------------------------------
 
@@ -1910,6 +2077,29 @@ class PlayerAI:
         # the bag sits on top of the fight. Rendering the move table there
         # sends `use` taps into whatever menu is really drawn - so name the
         # situation instead and hand the model the way back out.
+        # A pending move-learn freezes the battle on a prompt chain that no
+        # other tool understands - `use` fails, `wait` changes nothing. Catch
+        # it before anything else and point at the one command built for it.
+        pending = self._learnPending(state)
+        if pending is not None:
+            mon, newName = pending
+            monName = ((mon or {}).get("nickname")
+                       or (mon or {}).get("species") or "Your Pokemon")
+            choice = self._forgetChoice(mon, newName) if mon else None
+            plan = (f"forget {choice[1]} ({choice[2]}) and learn "
+                    f"{newName or 'the new move'}"
+                    if choice else "pick a move to forget")
+            obs.battleReport = (
+                f"MOVE LEARNING: {monName} wants to learn "
+                f"{newName or 'a new move'} but already knows four moves. "
+                f"The game is PAUSED on this prompt - moves and menus will "
+                f"not respond until it is answered.\n"
+                f"  `learn`      - make room: {plan}\n"
+                f"  `learn skip` - refuse and keep the current moves")
+            obs.recommendation = ("RECOMMENDED: `learn` - a new move is "
+                                  "almost always worth a slot")
+            return
+
         cb = str((obs.screen or {}).get("callback2", "")).upper()
         if cb and cb not in BATTLE_SCREEN_CALLBACKS:
             obs.battleReport = (

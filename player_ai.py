@@ -1134,6 +1134,20 @@ class Actions:
         except (MGBAError, ValueError):
             return ""
 
+    def _wildBattle(self):
+        """True for a wild battle, False for a trainer one, None if unreadable.
+
+        `run` and `throw` only work on wild Pokemon, so advice about either
+        has to know which kind this is. The flag comes straight from RAM; if
+        the read fails the advice hedges rather than asserting something it
+        doesn't know.
+        """
+        try:
+            raw = self.client.peek(BATTLE_TYPE_FLAGS_ADDR, 4)
+            return not (int.from_bytes(raw, "little") & BATTLE_TYPE_TRAINER)
+        except Exception:
+            return None
+
     def _moveName(self, state: dict, moveId: int) -> str:
         table = MOVE_TABLE_BY_GAME.get(state.get("game", ""))
         if not table or not 0 < moveId < 512:
@@ -2317,7 +2331,7 @@ class PlayerAI:
         party = state.get("party") or []
         balls = [b for b in (state.get("bag") or {}).get("poke_balls") or []
                  if b.get("quantity", 0) > 0]
-        if not balls or len(party) >= 6 or self._wildBattle() is False:
+        if not balls or len(party) >= 6 or self.actions._wildBattle() is False:
             return ""
         species = snap.foe.species
         owned = {(p.get("species_name") or "").upper() for p in party}
@@ -2371,19 +2385,6 @@ class PlayerAI:
             return 1.0
         b = 1048560 / (16711680 / a) ** 0.25
         return min(1.0, (b / 65536) ** 4)
-
-    def _wildBattle(self):
-        """True for a wild battle, False for a trainer one, None if unreadable.
-
-        `run` only works on wild Pokemon, so advice to flee has to know which
-        kind this is. The flag comes straight from RAM; if the read fails the
-        advice hedges rather than asserting something it doesn't know.
-        """
-        try:
-            raw = self.client.peek(BATTLE_TYPE_FLAGS_ADDR, 4)
-            return not (int.from_bytes(raw, "little") & BATTLE_TYPE_TRAINER)
-        except Exception:
-            return None
 
     def _survivalOutlook(self, snap, state: dict, best):
         """A losing exchange spelled out - or None while the fight is fine.
@@ -2440,7 +2441,7 @@ class PlayerAI:
         if not losing:
             return None
 
-        wild = self._wildBattle()
+        wild = self.actions._wildBattle()
 
         if dangerNow and not finishNow:
             math = (f"the foe's next hit can do {foeMaxHit} and you have "

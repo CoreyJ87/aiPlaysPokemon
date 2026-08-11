@@ -8,10 +8,20 @@
       "detail": "You have no Pokemon yet, and Professor Oak is NOT in his lab - he is out in the tall grass on Route 1, north of town, and the game will not let the story move until you walk up there. Go downstairs, out of the house, north across Pallet Town and into Route 1. Oak stops you at the edge of the grass and walks you back to his lab himself. Do not walk to the lab: it is empty, and going there achieves nothing.",
       "hint": "Step 1: `goto Pallet Town` to get outside. Step 2: `goto Route 1` to walk north. If neither is listed yet, `move up` until you are outside and keep heading north.",
       "completion": "Oak has taken you to his lab (you are standing in it)",
-      "done": { "map": "4-3-PalletTown_ProfessorOaksLab" },
-      "skip_if": { "party": 1 },
+      "done": {
+        "map": "4-3-PalletTown_ProfessorOaksLab"
+      },
+      "skip_if": {
+        "party": 1
+      },
       "places": {
-        "hide": ["Professor Oak", "Oaks Lab", "bulbasaur", "charmander", "squritle"],
+        "hide": [
+          "Professor Oak",
+          "Oaks Lab",
+          "bulbasaur",
+          "charmander",
+          "squritle"
+        ],
         "reason": "Professor Oak and the three starter Pokemon are in the lab but are not available to you yet - Oak is out on Route 1 and nothing in the lab will respond until he brings you there himself. Walking to the lab now is a dead end. Head north instead."
       }
     },
@@ -21,7 +31,9 @@
       "detail": "Three starters are sitting on the table in Oak's lab. They appear in your destination list as items: bulbasaur, charmander and squritle. Walk to one and take it. Bulbasaur is the easiest start - it is Grass/Poison and the first two gyms are Rock and Water.",
       "hint": "`goto bulbasaur` walks you to the table and picks it up.",
       "completion": "you have at least one Pokemon",
-      "done": { "party": 1 }
+      "done": {
+        "party": 1
+      }
     },
     {
       "id": "get-parcel",
@@ -29,8 +41,22 @@
       "detail": "Your rival will battle you on the way out of the lab - beat him. Then travel north through Route 1 to Viridian City and go into the Poke Mart. The clerk hands you a parcel for Professor Oak.",
       "hint": "`goto Clerk` walks all the way to the Viridian Mart counter. Talk to him with `press a`.",
       "completion": "you are carrying OAK'S PARCEL",
-      "done": { "has": "OAK'S PARCEL" },
-      "skip_if": { "any": [{ "has": "POKE BALL" }, { "has": "TOWN MAP" }, { "badges": 1 }] }
+      "done": {
+        "has": "OAK'S PARCEL"
+      },
+      "skip_if": {
+        "any": [
+          {
+            "has": "POKE BALL"
+          },
+          {
+            "has": "TOWN MAP"
+          },
+          {
+            "badges": 1
+          }
+        ]
+      }
     },
     {
       "id": "deliver-parcel",
@@ -38,8 +64,20 @@
       "detail": "Walk back south to Pallet Town and give the parcel to Oak in his lab. He gives you the Pokedex and five Poke Balls in return.",
       "hint": "`goto Professor Oak` routes you the whole way back. Talk to him with `press a` and clear the dialog.",
       "completion": "the parcel is delivered and you are carrying Poke Balls",
-      "done": { "lacks": "OAK'S PARCEL", "has": "POKE BALL" },
-      "skip_if": { "any": [{ "has": "TOWN MAP" }, { "badges": 1 }] }
+      "done": {
+        "lacks": "OAK'S PARCEL",
+        "has": "POKE BALL"
+      },
+      "skip_if": {
+        "any": [
+          {
+            "has": "TOWN MAP"
+          },
+          {
+            "badges": 1
+          }
+        ]
+      }
     },
     {
       "id": "get-town-map",
@@ -47,7 +85,9 @@
       "detail": "Daisy, your rival's sister, is in the house next door in Pallet Town. Talk to her and she gives you the Town Map. That finishes the tutorial.",
       "hint": "`goto town map` walks to the rival's house. Talk with `press a`.",
       "completion": "you are carrying the TOWN MAP",
-      "done": { "has": "TOWN MAP" }
+      "done": {
+        "has": "TOWN MAP"
+      }
     },
     {
       "id": "train-for-brock",
@@ -56,8 +96,12 @@
       "hint": "`catch <species>` walks to grass holding that species and paces until something appears. The readiness line below updates as you train.",
       "trainer": "brock",
       "completion": "the damage calculator says your party can beat Brock",
-      "done": { "ready_for": "brock" },
-      "skip_if": { "badges": 1 }
+      "done": {
+        "ready_for": "brock"
+      },
+      "skip_if": {
+        "badges": 1
+      }
     },
     {
       "id": "beat-brock",
@@ -66,7 +110,9 @@
       "hint": "Heal at the Pokemon Center first with `heal`, then `goto` the gym. In the fight, the calculator's pick is usually right.",
       "trainer": "brock",
       "completion": "you have 1 gym badge",
-      "done": { "badges": 1 }
+      "done": {
+        "badges": 1
+      }
     },
     {
       "id": "head-to-mt-moon",
@@ -74,7 +120,295 @@
       "detail": "Leave Pewter City to the east along Route 3, past the trainers, to the Pokemon Center at the foot of Mt Moon, then go into the cave.",
       "hint": "Route 3 is full of trainers. Heal before you set off, and check the readiness of your party as you go.",
       "completion": "you are inside Mt Moon",
-      "done": { "map": ["1-1-MtMoon_1F", "1-2-MtMoon_B1F", "1-3-MtMoon_B2F"] }
+      "done": {
+        "map": [
+          "1-1-MtMoon_1F",
+          "1-2-MtMoon_B1F",
+          "1-3-MtMoon_B2F"
+        ]
+      },
+      "skip_if": {
+        "badges": 2
+      }
+    },
+    {
+      "id": "cross-mt-moon",
+      "title": "Cross Mt Moon and reach Cerulean City",
+      "detail": "Mt Moon has three floors full of Zubat, trainers and Team Rocket grunts. Work east and down: 1F to B1F to B2F and back up to the east exit. Near the end a scientist guards two fossils - beat him and take either one, it makes no difference now. You come out on the east half of Route 4; Cerulean City is downhill to the east. The ledges on Route 4 are one-way: once you hop down you cannot walk back up.",
+      "hint": "`goto Cerulean City` replans through the cave automatically. If your team is hurting, the Route 4 Pokemon Center is just outside the west entrance. Paralyz Heals help against Zubat's Supersonic.",
+      "completion": "you are standing in Cerulean City",
+      "done": {
+        "map": "3-3-CeruleanCity"
+      },
+      "skip_if": {
+        "badges": 2
+      }
+    },
+    {
+      "id": "beat-misty",
+      "title": "Beat Misty and win the Cascade Badge",
+      "detail": "The Cerulean gym is in the north of town. Misty uses Water Pokemon: STARYU Lv18 and STARMIE Lv21. Starmie is fast and hits hard - be at least Lv18-20 before you challenge her. Grass and Electric moves hit her hard; Fire and Ground barely work. If you picked Squirtle this is a slow fight of attrition - Bubble does little to Water types, so lean on Bite and levels.",
+      "hint": "Train on Route 24 (north bridge) trainers first - they give good money and experience. `heal` between attempts. `check misty` works after you have fought her once.",
+      "trainer": "misty",
+      "completion": "you have 2 gym badges",
+      "done": {
+        "badges": 2
+      }
+    },
+    {
+      "id": "bill-ss-ticket",
+      "title": "Help Bill at his cottage and get the S.S. TICKET",
+      "detail": "Go north across Nugget Bridge (your rival ambushes you at the start, then five trainers in a row) and follow Route 24 and 25 east to the Sea Cottage. Inside, Bill is stuck as a Pokemon - use the machine when he asks (walk to it and press A), and he rewards you with an S.S. TICKET for the cruise ship in Vermilion.",
+      "hint": "`goto Route 25 Sea Cottage` after the bridge. Talk to the Pokemon in the cottage - that IS Bill.",
+      "completion": "you are carrying the S.S. TICKET",
+      "done": {
+        "has": "S.S. TICKET"
+      },
+      "skip_if": {
+        "badges": 3
+      }
+    },
+    {
+      "id": "to-vermilion",
+      "title": "Travel south to Vermilion City",
+      "detail": "Back in Cerulean, a burgled house on the north side lets you onto Route 5 south. Go south down Route 5; the road into Saffron is closed (the gate guard is thirsty), so take the Underground Path - a small building on Route 5 leads under Saffron and comes up on Route 6 - then continue south to Vermilion City on the coast.",
+      "hint": "`goto Vermilion City` knows the underground path. Heal in Cerulean first.",
+      "completion": "you are in Vermilion City",
+      "done": {
+        "map": "3-5-VermilionCity"
+      },
+      "skip_if": {
+        "badges": 3
+      }
+    },
+    {
+      "id": "ss-anne-cut",
+      "title": "Board the S.S. Anne and get HM01 CUT from the captain",
+      "detail": "The cruise ship is docked south of Vermilion - the sailor at the dock wants your S.S. TICKET. On board, work toward the stern and up: your rival stops you near the stairs to the captain's office. Beat him, then help the seasick captain (talk to him) and he hands over HM01, which teaches CUT. Once you leave the dock the ship sails away forever, so get the HM before walking off the pier.",
+      "hint": "`goto SSAnne Captains Office` routes through the ship. Trainer battles in the cabins are optional experience.",
+      "completion": "you are carrying HM01",
+      "done": {
+        "has": "HM01"
+      },
+      "skip_if": {
+        "badges": 3
+      }
+    },
+    {
+      "id": "beat-surge",
+      "title": "Teach CUT and beat Lt. Surge for the Thunder Badge",
+      "detail": "Teach CUT to a party member: open the START menu, POKEMON, pick a Pokemon, ITEM is wrong - instead use the HM01 from the BAG on a Pokemon that can learn it (most starters can). The Vermilion gym is behind a small cuttable tree - stand next to it, and cutting happens via the party menu or by pressing A at it once CUT is taught. Inside, the gym puzzle is two electric switches hidden in trash cans - check cans (press A) until you find the first, then the second is ALWAYS adjacent to it. Lt. Surge uses Electric Pokemon up to RAICHU Lv24: Ground moves end him, Water and Flying take heavy damage.",
+      "hint": "Diglett's Cave on Route 11 has Digletts and Dugtrios - catching one gives you a Ground type that walls this whole gym.",
+      "completion": "you have 3 gym badges",
+      "done": {
+        "badges": 3
+      }
+    },
+    {
+      "id": "rock-tunnel-lavender",
+      "title": "Go through Rock Tunnel to Lavender Town",
+      "detail": "From Cerulean head east on Route 9 (a cuttable tree blocks the path - CUT it) and on to Route 10's Pokemon Center by the Rock Tunnel entrance. The tunnel is pitch dark without FLASH, but you can still walk it - the screen just shows little. Follow the walls, battle through, and come out on south Route 10; Lavender Town is just below.",
+      "hint": "`goto Lavender Town` plans the whole way, darkness does not affect it. Heal at the Route 10 center before entering.",
+      "completion": "you are in Lavender Town",
+      "done": {
+        "map": "3-4-LavenderTown"
+      },
+      "skip_if": {
+        "badges": 4
+      }
+    },
+    {
+      "id": "reach-celadon",
+      "title": "Head west to Celadon City",
+      "detail": "The Pokemon Tower ghosts cannot be fought yet - you need the Silph Scope first. Leave Lavender west along Route 8; the Saffron gate is closed, so use the Underground Path building on Route 8 to pass beneath the city to Route 7, then continue west into Celadon City - the biggest city in Kanto, with a department store worth a shopping stop.",
+      "hint": "`goto Celadon City`. In the department store, Super Potions and Revives are money well spent.",
+      "completion": "you are in Celadon City",
+      "done": {
+        "map": "3-6-CeladonCity"
+      },
+      "skip_if": {
+        "badges": 4
+      }
+    },
+    {
+      "id": "beat-erika",
+      "title": "Beat Erika for the Rainbow Badge",
+      "detail": "The Celadon gym entrance is behind a cuttable tree on its east side. Erika uses Grass and Poison Pokemon up to VILEPLUME Lv29 - Fire and Flying moves are best, Psychic works on the poison halves. Watch for Sleep Powder; buy a few Awakenings first.",
+      "hint": "Be around Lv28-30. `heal` first, and `buy awakening 3` at the department store if you can reach the counter.",
+      "completion": "you have 4 gym badges",
+      "done": {
+        "badges": 4
+      }
+    },
+    {
+      "id": "rocket-hideout",
+      "title": "Raid the Rocket Hideout and take the SILPH SCOPE",
+      "detail": "In the Celadon Game Corner, a Rocket grunt guards a wall poster - beat him, press A on the poster, and stairs open to a four-floor hideout below. Work down: B1F has spin-tile mazes (ride them, they always end somewhere walkable), a grunt on B4F drops the LIFT KEY, the elevator takes you to Giovanni, and beating him leaves the SILPH SCOPE behind.",
+      "hint": "The spin tiles fight the navigator - use `move` one step at a time in there and let it re-find itself. Notes about which arrows lead where are worth writing.",
+      "completion": "you are carrying the SILPH SCOPE",
+      "done": {
+        "has": "SILPH SCOPE"
+      },
+      "skip_if": {
+        "has": "POKE FLUTE"
+      }
+    },
+    {
+      "id": "get-tea",
+      "title": "Get TEA from the old lady in Celadon Condominiums",
+      "detail": "The Saffron gate guards are thirsty and TEA is what they want. In the Celadon Condominiums (the tall apartment building west of the Pokemon Center), an old lady on the ground floor gives you a TEA when you talk to her. One tea opens every gate into Saffron.",
+      "hint": "`goto Celadon City Condominiums 1F`, then talk to the granny.",
+      "completion": "you are carrying TEA",
+      "done": {
+        "has": "TEA"
+      },
+      "skip_if": {
+        "any": [
+          {
+            "badges": 6
+          },
+          {
+            "has": "MASTER BALL"
+          }
+        ]
+      }
+    },
+    {
+      "id": "pokemon-tower",
+      "title": "Climb Pokemon Tower and rescue Mr. Fuji for the POKE FLUTE",
+      "detail": "Back to Lavender Town. With the Silph Scope the tower ghosts become fightable Gastly and Haunter - Psychic and Ghost moves work, Normal moves do NOTHING to them. Your rival waits on 2F. On 6F the ghost Marowak blocks the stairs: the scope reveals it, beat it (it cannot be caught). 7F is held by Rocket grunts; beat them and talk to Mr. Fuji, who takes you home and gives the POKE FLUTE.",
+      "hint": "Bring Potions and Antidotes - Ghost/Poison mons poison you constantly. Channelers give good experience.",
+      "completion": "you are carrying the POKE FLUTE",
+      "done": {
+        "has": "POKE FLUTE"
+      }
+    },
+    {
+      "id": "wake-snorlax-to-fuchsia",
+      "title": "Wake the Snorlax on Route 12 and travel south to Fuchsia City",
+      "detail": "A giant Snorlax sleeps across Route 12 just south of Lavender. Stand directly next to it, face it, press A and choose to play the POKE FLUTE - it wakes up ANGRY and attacks at Lv30. Beat it or catch it (it is a great team member). Then follow Routes 12, 13, 14 and 15 west and south to Fuchsia City - a long road of bird keepers and bikers.",
+      "hint": "The navigator does not know Snorlax is there - when `goto` reports blocked at the same tile on Route 12, that IS Snorlax; walk up to it and `press a`. Heal at Lavender first, the road to Fuchsia is long.",
+      "completion": "you are in Fuchsia City",
+      "done": {
+        "map": "3-7-FuchsiaCity"
+      },
+      "skip_if": {
+        "badges": 5
+      }
+    },
+    {
+      "id": "beat-koga",
+      "title": "Beat Koga for the Soul Badge",
+      "detail": "The Fuchsia gym is full of invisible walls - walk slowly and let blocked steps map them out. Koga uses Poison types up to WEEZING Lv43 with Self-Destruct and Toxic: Psychic and Ground moves are best, and keep Antidotes ready. Be around Lv35+.",
+      "hint": "The invisible maze defeats pathfinding - `move` one step at a time, note the gaps. His juggler underlings are visible-wall practice.",
+      "completion": "you have 5 gym badges",
+      "done": {
+        "badges": 5
+      }
+    },
+    {
+      "id": "safari-hms",
+      "title": "Get HM03 SURF and the GOLD TEETH in the Safari Zone, then HM04 STRENGTH",
+      "detail": "The Safari Zone (north side of Fuchsia, 500 entry fee) is a catching park: no battles, just balls and a 500-step limit per visit - if you run out, pay and re-enter. Push through Center, East and North areas to the West area: the Secret House at its far end gives HM03 SURF, and the GOLD TEETH item ball lies in the same area. Take the teeth to the Warden's house in Fuchsia (east of the Pokemon Center) - he rewards you with HM04 STRENGTH. Teach SURF to someone; the water opens half the map.",
+      "hint": "This may take several paid attempts - the step limit is real. `collect gold teeth` and `goto SafariZone Secret House` once inside.",
+      "completion": "you are carrying HM03 and HM04",
+      "done": {
+        "has": "HM03"
+      },
+      "skip_if": {
+        "badges": 6
+      }
+    },
+    {
+      "id": "silph-co",
+      "title": "Enter Saffron, liberate Silph Co., and take the MASTER BALL",
+      "detail": "Give TEA to the Saffron gate guard and the city opens. Team Rocket holds the Silph Co. tower - eleven floors of grunts and scientists, teleport pads, and locked doors. The CARD KEY on 5F opens the doors. Your rival fights you on 7F. Giovanni waits in the 11F office: beat him and the president gives you the MASTER BALL - a ball that never misses. Save it: it is meant for the legendary bird MEWTWO much later, but catching anything hard with it is fine.",
+      "hint": "The teleport pads are confusing - `note` which pad goes where. Heal at the Saffron center between attempts; the building remembers beaten trainers.",
+      "completion": "you are carrying the MASTER BALL",
+      "done": {
+        "has": "MASTER BALL"
+      },
+      "skip_if": {
+        "badges": 6
+      }
+    },
+    {
+      "id": "beat-sabrina",
+      "title": "Beat Sabrina for the Marsh Badge",
+      "detail": "The Saffron gym is a grid of teleporter squares - step on pads until you reach the middle. Sabrina's Psychic team peaks with ALAKAZAM Lv43: it is faster than almost anything with huge special attack, but physically frail - Bite, Shadow Ball and strong physical hits break it. Ghost and Bug moves are super effective.",
+      "hint": "Be Lv40+. The gym pads: each room's four corners teleport somewhere fixed - `note` the ones you try.",
+      "completion": "you have 6 gym badges",
+      "done": {
+        "badges": 6
+      }
+    },
+    {
+      "id": "cinnabar-mansion",
+      "title": "Surf to Cinnabar Island and find the SECRET KEY in the Pokemon Mansion",
+      "detail": "Surf south from Pallet Town down Route 21 (or from Fuchsia through the Seafoam Islands) to Cinnabar Island. The gym is locked - the SECRET KEY is in the burned Pokemon Mansion next door: ride the floors down to the basement, flipping statue switches (press A at Mewtwo statues) to open the gates, and grab the key from the item ball on B1F.",
+      "hint": "`goto Cinnabar Island` will plan the surf route once someone knows SURF. In the mansion, statues ARE the switches.",
+      "completion": "you are carrying the SECRET KEY",
+      "done": {
+        "has": "SECRET KEY"
+      },
+      "skip_if": {
+        "badges": 7
+      }
+    },
+    {
+      "id": "beat-blaine",
+      "title": "Beat Blaine for the Volcano Badge",
+      "detail": "The Cinnabar gym's quiz machines open doors if you answer, or you can just battle every trainer instead. Blaine's Fire team peaks with ARCANINE Lv47: Water, Rock and Ground moves are super effective, and your SURF user should carry this fight. After the badge, Bill appears outside and offers a boat trip to the Sevii Islands - politely DECLINE (answer no / press B), the islands are a side story and the league is close.",
+      "hint": "Be Lv42+. Surf is both the way here and the way to win.",
+      "completion": "you have 7 gym badges",
+      "done": {
+        "badges": 7
+      }
+    },
+    {
+      "id": "beat-giovanni",
+      "title": "Beat Giovanni in Viridian City for the Earth Badge",
+      "detail": "The long-locked Viridian gym is open now, and its leader is Giovanni of Team Rocket, on his last stand with Ground types up to RHYDON Lv50. Water, Grass and Ice moves crush his team. The gym floor has spin tiles like the Rocket Hideout - step carefully. With this badge every trained Pokemon obeys you and the road to the Pokemon League is open.",
+      "hint": "Fly/walk back to Viridian. Be Lv45+; a strong Water attacker sweeps.",
+      "completion": "you have all 8 gym badges",
+      "done": {
+        "badges": 8
+      }
+    },
+    {
+      "id": "victory-road",
+      "title": "Cross Route 23 and Victory Road to the Indigo Plateau",
+      "detail": "West of Viridian, Route 22 leads to the badge-check gates of Route 23 - your rival ambushes you one more time near the start. The guards check badges; with all eight you walk through. Victory Road is the final cave: three floors of the game's strongest trainers and STRENGTH boulder puzzles - push boulders onto the switch tiles to open the way (press A at a boulder after teaching STRENGTH). Come out the top onto the Indigo Plateau.",
+      "hint": "Stock up in Viridian first: Hyper Potions, Revives, Full Heals - all the money you have been saving is for this. The boulder puzzles fight the pathfinder; `move` step by step and `note` what worked.",
+      "completion": "you are at the Indigo Plateau",
+      "done": {
+        "map": [
+          "3-9-IndigoPlateau_Exterior",
+          "13-0-IndigoPlateau_PokemonCenter_1F"
+        ]
+      },
+      "skip_if": {
+        "map": [
+          "13-0-IndigoPlateau_PokemonCenter_1F",
+          "13-1-IndigoPlateau_PokemonCenter_2F",
+          "1-75-PokemonLeague_LoreleisRoom",
+          "1-76-PokemonLeague_BrunosRoom",
+          "1-77-PokemonLeague_AgathasRoom",
+          "1-78-PokemonLeague_LancesRoom",
+          "1-79-PokemonLeague_ChampionsRoom",
+          "1-80-PokemonLeague_HallOfFame"
+        ]
+      }
+    },
+    {
+      "id": "elite-four",
+      "title": "Beat the Elite Four and the Champion",
+      "detail": "The Pokemon League is five battles in a row with NO healing between rooms except your own items - stock 10+ Hyper Potions, 5+ Revives, Full Heals. The lobby has a center and mart: heal and shop, then take the door at the top. In order: LORELEI (Ice/Water - Electric and Fighting moves; her DEWGONG stalls), BRUNO (Fighting/Rock - Psychic and Water), AGATHA (Ghost/Poison - Psychic, and Normal moves do nothing to her ghosts), LANCE (Dragons - Ice moves take his DRAGONITEs down), and finally your RIVAL as Champion with a balanced Lv53-63 team built around his starter. Win, and the Hall of Fame records you forever.",
+      "hint": "Be Lv50+ across the party. Between rooms, `bag` heals beat pressing on hurt. If you lose, the lobby lets you heal and try again - the rooms remember nothing.",
+      "completion": "you are in the Hall of Fame - the game is BEATEN",
+      "done": {
+        "map": "1-80-PokemonLeague_HallOfFame"
+      }
     }
   ]
 }
